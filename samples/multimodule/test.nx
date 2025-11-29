@@ -1,0 +1,79 @@
+// Tests for the main multimodule sample
+
+// Test that mathlib functions are accessible from main module
+std test_mathlib_integration(): bool {
+    // Test basic math operations from mathlib using module-qualified syntax
+    c abs_result = mathlib.abs(subi64(0, 25))
+    c max_result = mathlib.max(100, 50)
+    c min_result = mathlib.min(100, 50)
+    c fact_result = mathlib.factorial(5)
+    c pow_result = mathlib.pow(3, 3)
+    c gcd_result = mathlib.gcd(24, 36)
+    c lcm_result = mathlib.lcm(4, 5)
+
+    c check1 = eqi64(abs_result, 25)
+    c check2 = eqi64(max_result, 100)
+    c check3 = eqi64(min_result, 50)
+    c check4 = eqi64(fact_result, 120)
+    c check5 = eqi64(pow_result, 27)
+    c check6 = eqi64(gcd_result, 12)
+    c check7 = eqi64(lcm_result, 20)
+
+    and(and(and(and(and(and(check1, check2), check3), check4), check5), check6), check7)
+}
+
+// Test that utils functions are accessible from main module
+std test_utils_integration(): bool {
+    // Test utility functions (imported directly via use { ... } from util)
+    c count_result = count_up_to(3)
+    c clamp_result = clamp(subi64(0, 10), 0, 100)
+    c sign_result = sign(42)
+    c in_range_result = in_range(50, 0, 100)
+
+    c check1 = eqi64(count_result, 6)
+    c check2 = eqi64(clamp_result, 0)
+    c check3 = eqi64(sign_result, 1)
+
+    and(and(and(check1, check2), check3), in_range_result)
+}
+
+// Test combining functions from both modules
+std test_combined_usage(): bool {
+    // Use mathlib's pow and utils' clamp together
+    c power_value = mathlib.pow(2, 10)
+    c clamped_power = clamp(power_value, 0, 500)
+
+    // Use abs with sign
+    c negative = subi64(0, 42)
+    c absolute = mathlib.abs(negative)
+    c sign_of_neg = sign(negative)
+    c sign_of_abs = sign(absolute)
+
+    c check1 = eqi64(power_value, 1024)
+    c check2 = eqi64(clamped_power, 500)
+    c check3 = eqi64(absolute, 42)
+    c check4 = eqi64(sign_of_neg, subi64(0, 1))
+    c check5 = eqi64(sign_of_abs, 1)
+
+    and(and(and(and(check1, check2), check3), check4), check5)
+}
+
+// Test edge cases across modules
+std test_edge_cases(): bool {
+    // Zero handling
+    c zero_abs = mathlib.abs(0)
+    c zero_sign = sign(0)
+    c zero_factorial = mathlib.factorial(0)
+    c zero_clamp = clamp(0, subi64(0, 10), 10)
+
+    // Range boundaries
+    c in_range_min = in_range(0, 0, 10)
+    c in_range_max = in_range(10, 0, 10)
+
+    c check1 = eqi64(zero_abs, 0)
+    c check2 = eqi64(zero_sign, 0)
+    c check3 = eqi64(zero_factorial, 1)
+    c check4 = eqi64(zero_clamp, 0)
+
+    and(and(and(and(and(check1, check2), check3), check4), in_range_min), in_range_max)
+}

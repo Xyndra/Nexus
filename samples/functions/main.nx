@@ -1,0 +1,27 @@
+use { println } from compat.io
+
+std add(i64 a, i64 b): i64 {
+    return addi64(a, b)
+}
+
+std multiply(i64 x, i64 y): i64 {
+    return muli64(x, y)
+}
+
+std double(i64 n): i64 {
+    return muli64(n, 2)
+}
+
+compat main(): void {
+    c sum = add(10, 20)
+    println(sum)
+
+    c product = multiply(6, 7)
+    println(product)
+
+    c doubled = double(21)
+    println(doubled)
+
+    c nested = add(multiply(3, 4), 5)
+    println(nested)
+}

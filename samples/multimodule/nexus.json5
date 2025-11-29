@@ -1,0 +1,14 @@
+{
+    mod: 'multimodule',
+    permissions: {
+        compatIO: ['multimodule', 'util'],
+    },
+    deps: [
+        // Local dependencies - reference other modules by path
+        "local:./mathlib",
+        "local:./utils",
+        // Git dependencies (unimplemented) would look like:
+        // "git:https://github.com/user/repo:v1.0.0",
+        // "git:https://github.com/user/repo:abc1234",
+    ]
+}

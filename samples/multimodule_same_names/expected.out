@@ -1,0 +1,40 @@
+=== Same Names Demo ===
+Calling functions with the same name from different modules:
+
+--- process(5) ---
+module_a.process(5) [multiplies by 2]:
+10
+module_b.process(5) [multiplies by 3]:
+15
+
+--- compute(10, 20) ---
+module_a.compute(10, 20) [a + b + 100]:
+130
+module_b.compute(10, 20) [a - b + 50]:
+40
+
+--- transform(4) ---
+module_a.transform(4) [square]:
+16
+module_b.transform(4) [cube]:
+64
+
+--- get_value() ---
+module_a.get_value() [returns 42]:
+42
+module_b.get_value() [returns 99]:
+99
+
+--- process_and_transform(3) ---
+module_a.process_and_transform(3) [process=6, square=36]:
+36
+module_b.process_and_transform(3) [process=9, cube=729]:
+729
+
+--- Cross-module chaining ---
+module_b.transform(module_a.process(2)) [process=4, cube=64]:
+64
+module_a.transform(module_b.process(2)) [process=6, square=36]:
+36
+
+=== Demo Complete ===

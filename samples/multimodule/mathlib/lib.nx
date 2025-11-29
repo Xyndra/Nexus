@@ -1,0 +1,87 @@
+// mathlib - A collection of mathematical functions
+
+// Calculate the absolute value of an integer
+std abs(i64 n): i64 {
+    if (lti64(n, 0)) {
+        return subi64(0, n)
+    }
+    return n
+}
+
+// Calculate the maximum of two integers
+std max(i64 a, i64 b): i64 {
+    if (gti64(a, b)) {
+        return a
+    }
+    return b
+}
+
+// Calculate the minimum of two integers
+std min(i64 a, i64 b): i64 {
+    if (lti64(a, b)) {
+        return a
+    }
+    return b
+}
+
+// Calculate the factorial of a non-negative integer
+std factorial(i64 n): i64 {
+    if (lei64(n, 1)) {
+        return 1
+    }
+    return muli64(n, factorial(subi64(n, 1)))
+}
+
+// Calculate the power of a base to an exponent (both non-negative)
+std pow(i64 base, i64 exp): i64 {
+    if (eqi64(exp, 0)) {
+        return 1
+    }
+    m result = 1
+    m i = 0
+    subscope loop {
+        if (gei64(i, exp)) {
+            return result
+        }
+        result = muli64(result, base)
+        i = addi64(i, 1)
+        goto loop
+    }
+    return result
+}
+
+// Calculate the GCD of two positive integers using Euclidean algorithm
+std gcd(i64 a, i64 b): i64 {
+    m x = a
+    m y = b
+    subscope loop {
+        if (eqi64(y, 0)) {
+            return x
+        }
+        c temp = y
+        y = modi64(x, y)
+        x = temp
+        goto loop
+    }
+    return x
+}
+
+// Calculate the LCM of two positive integers
+std lcm(i64 a, i64 b): i64 {
+    return divi64(muli64(a, b), gcd(a, b))
+}
+
+// Check if a number is even
+std is_even(i64 n): bool {
+    return eqi64(modi64(n, 2), 0)
+}
+
+// Check if a number is odd
+std is_odd(i64 n): bool {
+    return nei64(modi64(n, 2), 0)
+}
+
+// Calculate the sum from 1 to n
+std sum_to_n(i64 n): i64 {
+    return divi64(muli64(n, addi64(n, 1)), 2)
+}

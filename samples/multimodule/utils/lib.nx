@@ -1,0 +1,63 @@
+// utils - Utility functions for string/value operations
+
+use { println } from compat.io
+
+// Print a value with a label
+compat print_labeled(str label, i64 value): void {
+    println(label)
+    println(value)
+}
+
+// Print a separator line
+compat print_separator(): void {
+    println("---")
+}
+
+// Print a header
+compat print_header(str title): void {
+    println("===")
+    println(title)
+    println("===")
+}
+
+// Repeat an action n times (prints count)
+std count_up_to(i64 n): i64 {
+    m sum = 0
+    m i = 1
+    subscope loop {
+        if (gti64(i, n)) {
+            return sum
+        }
+        sum = addi64(sum, i)
+        i = addi64(i, 1)
+        goto loop
+    }
+    return sum
+}
+
+// Clamp a value between min and max
+std clamp(i64 value, i64 min_val, i64 max_val): i64 {
+    if (lti64(value, min_val)) {
+        return min_val
+    }
+    if (gti64(value, max_val)) {
+        return max_val
+    }
+    return value
+}
+
+// Check if a value is within a range (inclusive)
+std in_range(i64 value, i64 min_val, i64 max_val): bool {
+    return and(gei64(value, min_val), lei64(value, max_val))
+}
+
+// Calculate the sign of a number (-1, 0, or 1)
+std sign(i64 n): i64 {
+    if (lti64(n, 0)) {
+        return subi64(0, 1)
+    }
+    if (gti64(n, 0)) {
+        return 1
+    }
+    return 0
+}

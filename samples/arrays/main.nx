@@ -1,0 +1,18 @@
+use { println } from compat.io
+
+compat main(): void {
+    c arr = [1, 2, 3, 4, 5]
+    println(arr)
+
+    c first = arr[@unchecked 0]
+    println(first)
+
+    c length = len(arr)
+    println(length)
+
+    c doubled = [2, 4, 6, 8, 10]
+    println(doubled)
+
+    c sum = addi64(addi64(addi64(addi64(1, 2), 3), 4), 5)
+    println(sum)
+}

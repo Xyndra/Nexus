@@ -1,0 +1,11 @@
+[package]
+name = "nexus-sandbox"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+nexus-interpreter.workspace = true
+nexus-parser.workspace = true
+nexus-permissions.workspace = true
+thiserror.workspace = true

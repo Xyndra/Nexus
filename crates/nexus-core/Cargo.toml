@@ -1,0 +1,7 @@
+[package]
+name = "nexus-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true

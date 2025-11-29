@@ -1,0 +1,20 @@
+use { println } from compat.io
+
+compat main(): void {
+    c x = 42
+    println(x)
+
+    c y = 100
+    c z = addi64(x, y)
+    println(z)
+
+    c flag = true
+    println(flag)
+
+    c arr = [1, 2, 3, 4, 5]
+    println(arr)
+    println(len(arr))
+
+    c greeting = "Hello, Nexus!"
+    println(greeting)
+}

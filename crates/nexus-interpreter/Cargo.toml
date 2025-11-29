@@ -1,0 +1,12 @@
+[package]
+name = "nexus-interpreter"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nexus-core = { workspace = true }
+nexus-lexer = { workspace = true }
+nexus-parser = { workspace = true }
+nexus-types = { workspace = true }
+nexus-permissions = { workspace = true }
+thiserror = { workspace = true }

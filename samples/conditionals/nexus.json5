@@ -1,0 +1,8 @@
+{
+    mod: 'conditionals',
+    main: 'main.nx',
+    permissions: {
+        compatIO: ['conditionals']
+    },
+    deps: []
+}

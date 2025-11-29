@@ -1,0 +1,8 @@
+{
+    mod: 'arrays',
+    main: 'main.nx',
+    permissions: {
+        compatIO: ['arrays']
+    },
+    deps: []
+}

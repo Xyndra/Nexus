@@ -1,0 +1,42 @@
+===
+Multi-Module Sample
+===
+Math operations:
+---
+abs(-42):
+42
+max(15, 27):
+27
+min(15, 27):
+15
+factorial(6):
+720
+pow(2, 8):
+256
+gcd(48, 18):
+6
+lcm(4, 6):
+12
+---
+Parity checks:
+is_even(10):
+true
+is_odd(10):
+false
+---
+Sum from 1 to 100:
+sum_to_n(100):
+5050
+---
+Utils operations:
+---
+count_up_to(5):
+15
+clamp(50, 0, 30):
+30
+sign(-99):
+-1
+in_range(25, 10, 50):
+true
+---
+Done!

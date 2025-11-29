@@ -1,0 +1,11 @@
+[package]
+name = "nexus-parser"
+description = "Parser and AST definitions for the Nexus programming language"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nexus-core = { workspace = true }
+nexus-lexer = { workspace = true }
+nexus-types = { workspace = true }
+thiserror = { workspace = true }

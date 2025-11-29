@@ -1,0 +1,9 @@
+[package]
+name = "nexus-test-runner"
+version = "0.1.0"
+edition = "2021"
+description = "Test runner for Nexus sample programs"
+
+[dependencies]
+
+[dev-dependencies]

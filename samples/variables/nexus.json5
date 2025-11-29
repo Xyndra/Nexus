@@ -1,0 +1,8 @@
+{
+    mod: 'variables',
+    main: 'main.nx',
+    permissions: {
+        compatIO: ['variables']
+    },
+    deps: []
+}

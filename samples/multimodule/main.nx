@@ -1,0 +1,52 @@
+// Main module demonstrating multi-module project structure
+// This sample shows how a multi-module project is organized
+// with local dependencies declared in nexus.json5
+
+use { println } from compat.io
+
+// Symbol imports - import specific functions directly
+use { print_header, print_separator, print_labeled, count_up_to, clamp, in_range, sign } from util
+
+// Module-level import - allows using mathlib.function() syntax
+use mathlib
+
+compat main(): void {
+    print_header("Multi-Module Sample")
+
+    println("Math operations:")
+    print_separator()
+
+    // Using module-qualified syntax: mathlib.function()
+    print_labeled("abs(-42):", mathlib.abs(subi64(0, 42)))
+    print_labeled("max(15, 27):", mathlib.max(15, 27))
+    print_labeled("min(15, 27):", mathlib.min(15, 27))
+    print_labeled("factorial(6):", mathlib.factorial(6))
+    print_labeled("pow(2, 8):", mathlib.pow(2, 8))
+    print_labeled("gcd(48, 18):", mathlib.gcd(48, 18))
+    print_labeled("lcm(4, 6):", mathlib.lcm(4, 6))
+
+    print_separator()
+    println("Parity checks:")
+    println("is_even(10):")
+    println(mathlib.is_even(10))
+    println("is_odd(10):")
+    println(mathlib.is_odd(10))
+
+    print_separator()
+    println("Sum from 1 to 100:")
+    print_labeled("sum_to_n(100):", mathlib.sum_to_n(100))
+
+    print_separator()
+    println("Utils operations:")
+    print_separator()
+
+    print_labeled("count_up_to(5):", count_up_to(5))
+    print_labeled("clamp(50, 0, 30):", clamp(50, 0, 30))
+    print_labeled("sign(-99):", sign(subi64(0, 99)))
+
+    println("in_range(25, 10, 50):")
+    println(in_range(25, 10, 50))
+
+    print_separator()
+    println("Done!")
+}

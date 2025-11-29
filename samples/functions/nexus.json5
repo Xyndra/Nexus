@@ -1,0 +1,8 @@
+{
+    mod: 'functions',
+    main: 'main.nx',
+    permissions: {
+        compatIO: ['functions']
+    },
+    deps: []
+}

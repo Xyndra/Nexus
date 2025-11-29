@@ -1,0 +1,49 @@
+// Tests for the utils module
+
+// Test count_up_to function
+std test_count_up_to(): bool {
+    c result1 = count_up_to(5)
+    c result2 = count_up_to(10)
+
+    c check1 = eqi64(result1, 15)
+    c check2 = eqi64(result2, 55)
+
+    and(check1, check2)
+}
+
+// Test clamp function
+std test_clamp(): bool {
+    c result1 = clamp(5, 0, 10)
+    c result2 = clamp(subi64(0, 5), 0, 10)
+    c result3 = clamp(15, 0, 10)
+
+    c check1 = eqi64(result1, 5)
+    c check2 = eqi64(result2, 0)
+    c check3 = eqi64(result3, 10)
+
+    and(and(check1, check2), check3)
+}
+
+// Test in_range function
+std test_in_range(): bool {
+    c r1 = in_range(5, 0, 10)
+    c r2 = in_range(0, 0, 10)
+    c r3 = in_range(10, 0, 10)
+    c r4 = in_range(subi64(0, 1), 0, 10)
+    c r5 = in_range(11, 0, 10)
+
+    and(and(and(and(r1, r2), r3), not(r4)), not(r5))
+}
+
+// Test sign function
+std test_sign(): bool {
+    c result1 = sign(42)
+    c result2 = sign(0)
+    c result3 = sign(subi64(0, 17))
+
+    c check1 = eqi64(result1, 1)
+    c check2 = eqi64(result2, 0)
+    c check3 = eqi64(result3, subi64(0, 1))
+
+    and(and(check1, check2), check3)
+}

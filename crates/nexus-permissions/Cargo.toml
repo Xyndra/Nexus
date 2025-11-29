@@ -1,0 +1,8 @@
+[package]
+name = "nexus-permissions"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nexus-core = { workspace = true }
+thiserror = { workspace = true }

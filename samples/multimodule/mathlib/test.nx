@@ -1,0 +1,115 @@
+// Tests for the mathlib module
+
+// Test absolute value function
+std test_abs(): bool {
+    c result1 = abs(5)
+    c result2 = abs(0)
+    c result3 = abs(subi64(0, 10))
+
+    c check1 = eqi64(result1, 5)
+    c check2 = eqi64(result2, 0)
+    c check3 = eqi64(result3, 10)
+
+    and(and(check1, check2), check3)
+}
+
+// Test max function
+std test_max(): bool {
+    c result1 = max(5, 10)
+    c result2 = max(10, 5)
+    c result3 = max(7, 7)
+
+    c check1 = eqi64(result1, 10)
+    c check2 = eqi64(result2, 10)
+    c check3 = eqi64(result3, 7)
+
+    and(and(check1, check2), check3)
+}
+
+// Test min function
+std test_min(): bool {
+    c result1 = min(5, 10)
+    c result2 = min(10, 5)
+    c result3 = min(7, 7)
+
+    c check1 = eqi64(result1, 5)
+    c check2 = eqi64(result2, 5)
+    c check3 = eqi64(result3, 7)
+
+    and(and(check1, check2), check3)
+}
+
+// Test factorial function
+std test_factorial(): bool {
+    c result1 = factorial(0)
+    c result2 = factorial(1)
+    c result3 = factorial(5)
+    c result4 = factorial(10)
+
+    c check1 = eqi64(result1, 1)
+    c check2 = eqi64(result2, 1)
+    c check3 = eqi64(result3, 120)
+    c check4 = eqi64(result4, 3628800)
+
+    and(and(and(check1, check2), check3), check4)
+}
+
+// Test pow function
+std test_pow(): bool {
+    c result1 = pow(2, 0)
+    c result2 = pow(2, 10)
+    c result3 = pow(3, 4)
+
+    c check1 = eqi64(result1, 1)
+    c check2 = eqi64(result2, 1024)
+    c check3 = eqi64(result3, 81)
+
+    and(and(check1, check2), check3)
+}
+
+// Test gcd function
+std test_gcd(): bool {
+    c result1 = gcd(12, 8)
+    c result2 = gcd(17, 13)
+    c result3 = gcd(100, 25)
+
+    c check1 = eqi64(result1, 4)
+    c check2 = eqi64(result2, 1)
+    c check3 = eqi64(result3, 25)
+
+    and(and(check1, check2), check3)
+}
+
+// Test lcm function
+std test_lcm(): bool {
+    c result1 = lcm(4, 6)
+    c result2 = lcm(3, 5)
+    c result3 = lcm(12, 8)
+
+    c check1 = eqi64(result1, 12)
+    c check2 = eqi64(result2, 15)
+    c check3 = eqi64(result3, 24)
+
+    and(and(check1, check2), check3)
+}
+
+// Test is_even and is_odd functions
+std test_parity(): bool {
+    c even4 = is_even(4)
+    c even7 = is_even(7)
+    c odd4 = is_odd(4)
+    c odd7 = is_odd(7)
+
+    and(and(and(even4, not(even7)), not(odd4)), odd7)
+}
+
+// Test sum_to_n function
+std test_sum_to_n(): bool {
+    c result1 = sum_to_n(10)
+    c result2 = sum_to_n(100)
+
+    c check1 = eqi64(result1, 55)
+    c check2 = eqi64(result2, 5050)
+
+    and(check1, check2)
+}

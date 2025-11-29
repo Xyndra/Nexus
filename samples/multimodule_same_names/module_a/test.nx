@@ -1,0 +1,58 @@
+// Tests for module_a functions
+
+// Test process function (multiplies by 2)
+std test_process(): bool {
+    c result1 = process(5)
+    c result2 = process(0)
+    c result3 = process(10)
+
+    c check1 = eqi64(result1, 10)
+    c check2 = eqi64(result2, 0)
+    c check3 = eqi64(result3, 20)
+
+    and(and(check1, check2), check3)
+}
+
+// Test compute function (adds a + b + 100)
+std test_compute(): bool {
+    c result1 = compute(10, 20)
+    c result2 = compute(0, 0)
+    c result3 = compute(50, 50)
+
+    c check1 = eqi64(result1, 130)
+    c check2 = eqi64(result2, 100)
+    c check3 = eqi64(result3, 200)
+
+    and(and(check1, check2), check3)
+}
+
+// Test transform function (returns square)
+std test_transform(): bool {
+    c result1 = transform(4)
+    c result2 = transform(0)
+    c result3 = transform(7)
+
+    c check1 = eqi64(result1, 16)
+    c check2 = eqi64(result2, 0)
+    c check3 = eqi64(result3, 49)
+
+    and(and(check1, check2), check3)
+}
+
+// Test get_value function (returns 42)
+std test_get_value(): bool {
+    c result = get_value()
+    eqi64(result, 42)
+}
+
+// Test process_and_transform (process then transform)
+// process(3) = 6, transform(6) = 36
+std test_process_and_transform(): bool {
+    c result1 = process_and_transform(3)
+    c result2 = process_and_transform(5)
+
+    c check1 = eqi64(result1, 36)
+    c check2 = eqi64(result2, 100)
+
+    and(check1, check2)
+}

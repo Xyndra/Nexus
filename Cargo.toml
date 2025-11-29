@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "crates/nexus-core",
+    "crates/nexus-lexer",
+    "crates/nexus-parser",
+    "crates/nexus-types",
+    "crates/nexus-permissions",
+    "crates/nexus-interpreter",
+    "crates/nexus-sandbox",
+    "crates/nexus-lsp",
+    "crates/nexus-cli",
+    "crates/nexus-test-runner",
+    "crates/nexus-project",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/user/nexus"
+
+[workspace.dependencies]
+nexus-core = { path = "crates/nexus-core" }
+nexus-lexer = { path = "crates/nexus-lexer" }
+nexus-parser = { path = "crates/nexus-parser" }
+nexus-types = { path = "crates/nexus-types" }
+nexus-permissions = { path = "crates/nexus-permissions" }
+nexus-interpreter = { path = "crates/nexus-interpreter" }
+nexus-sandbox = { path = "crates/nexus-sandbox" }
+nexus-lsp = { path = "crates/nexus-lsp" }
+nexus-project = { path = "crates/nexus-project" }
+
+thiserror = "2"

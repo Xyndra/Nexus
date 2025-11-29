@@ -1,0 +1,65 @@
+// Main module demonstrating modules with conflicting function names
+// Both module_a and module_b have functions named: process, compute, transform, get_value
+// This shows that the module system correctly namespaces them
+
+use { println } from compat.io
+
+// Import both modules - they have same function names but different implementations
+use module_a
+use module_b
+
+compat main(): void {
+    println("=== Same Names Demo ===")
+    println("Calling functions with the same name from different modules:")
+    println("")
+
+    // Call process from both modules
+    println("--- process(5) ---")
+    println("module_a.process(5) [multiplies by 2]:")
+    println(module_a.process(5))
+    println("module_b.process(5) [multiplies by 3]:")
+    println(module_b.process(5))
+    println("")
+
+    // Call compute from both modules
+    println("--- compute(10, 20) ---")
+    println("module_a.compute(10, 20) [a + b + 100]:")
+    println(module_a.compute(10, 20))
+    println("module_b.compute(10, 20) [a - b + 50]:")
+    println(module_b.compute(10, 20))
+    println("")
+
+    // Call transform from both modules
+    println("--- transform(4) ---")
+    println("module_a.transform(4) [square]:")
+    println(module_a.transform(4))
+    println("module_b.transform(4) [cube]:")
+    println(module_b.transform(4))
+    println("")
+
+    // Call get_value from both modules
+    println("--- get_value() ---")
+    println("module_a.get_value() [returns 42]:")
+    println(module_a.get_value())
+    println("module_b.get_value() [returns 99]:")
+    println(module_b.get_value())
+    println("")
+
+    // Call composite functions from both modules
+    println("--- process_and_transform(3) ---")
+    println("module_a.process_and_transform(3) [process=6, square=36]:")
+    println(module_a.process_and_transform(3))
+    println("module_b.process_and_transform(3) [process=9, cube=729]:")
+    println(module_b.process_and_transform(3))
+    println("")
+
+    // Chain calls across modules
+    println("--- Cross-module chaining ---")
+    println("module_b.transform(module_a.process(2)) [process=4, cube=64]:")
+    println(module_b.transform(module_a.process(2)))
+    println("module_a.transform(module_b.process(2)) [process=6, square=36]:")
+    println(module_a.transform(module_b.process(2)))
+    println("")
+
+    println("=== Demo Complete ===")
+}

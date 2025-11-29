@@ -1,0 +1,46 @@
+use { println } from compat.io
+
+compat main(): void {
+    c a = 10
+    c b = 5
+
+    println(addi64(a, b))
+    println(subi64(a, b))
+    println(muli64(a, b))
+    println(divi64(a, b))
+    println(modi64(a, b))
+
+    c x = 3.14
+    c y = 2.0
+
+    println(addf64(x, y))
+    println(mulf64(x, y))
+
+    println(negi64(a))
+    println(negf64(x))
+}
+
+// Test functions for arithmetic operations
+std test_addi64(): bool {
+    eqi64(addi64(10, 5), 15)
+}
+
+std test_subi64(): bool {
+    eqi64(subi64(10, 5), 5)
+}
+
+std test_muli64(): bool {
+    eqi64(muli64(10, 5), 50)
+}
+
+std test_divi64(): bool {
+    eqi64(divi64(10, 5), 2)
+}
+
+std test_modi64(): bool {
+    eqi64(modi64(10, 3), 1)
+}
+
+std test_negi64(): bool {
+    eqi64(negi64(10), subi64(0, 10))
+}

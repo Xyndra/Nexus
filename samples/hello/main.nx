@@ -1,0 +1,5 @@
+use { println } from compat.io
+
+compat main(): void {
+    println("Hello, Nexus!")
+}

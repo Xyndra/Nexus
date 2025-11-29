@@ -1,0 +1,16 @@
+[package]
+name = "nexus-project"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+nexus-parser.workspace = true
+nexus-interpreter.workspace = true
+
+thiserror.workspace = true
+serde = { version = "1", features = ["derive"] }
+json5 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

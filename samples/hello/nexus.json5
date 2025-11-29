@@ -1,0 +1,8 @@
+{
+    mod: 'hello',
+    main: 'main.nx',
+    permissions: {
+        compatIO: ['hello']
+    },
+    deps: []
+}

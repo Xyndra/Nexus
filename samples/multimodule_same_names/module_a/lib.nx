@@ -1,0 +1,46 @@
+// module_a - First module with functions that have same names as module_b
+// This demonstrates that modules can have conflicting function names
+
+use { println } from compat.io
+
+// Process function - module_a version multiplies by 2
+std process(i64 n): i64 {
+    return muli64(n, 2)
+}
+
+// Compute function - module_a version adds 100
+std compute(i64 a, i64 b): i64 {
+    return addi64(addi64(a, b), 100)
+}
+
+// Transform function - module_a version returns square
+std transform(i64 n): i64 {
+    return muli64(n, n)
+}
+
+// Get value function - module_a version returns 42
+std get_value(): i64 {
+    return 42
+}
+
+// Helper that uses internal functions (tests internal call resolution)
+std process_and_transform(i64 n): i64 {
+    c processed = process(n)
+    return transform(processed)
+}
+
+// Module A's own main function
+compat main(): void {
+    println("=== Module A Main ===")
+    println("process(5):")
+    println(process(5))
+    println("compute(10, 20):")
+    println(compute(10, 20))
+    println("transform(4):")
+    println(transform(4))
+    println("get_value():")
+    println(get_value())
+    println("process_and_transform(3):")
+    println(process_and_transform(3))
+    println("=== Module A Done ===")
+}

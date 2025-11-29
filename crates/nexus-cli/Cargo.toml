@@ -1,0 +1,18 @@
+[package]
+name = "nexus-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nexus"
+path = "src/main.rs"
+
+[dependencies]
+nexus-core.workspace = true
+nexus-lexer.workspace = true
+nexus-parser.workspace = true
+nexus-types.workspace = true
+nexus-permissions.workspace = true
+nexus-interpreter.workspace = true
+nexus-sandbox.workspace = true
+nexus-project.workspace = true

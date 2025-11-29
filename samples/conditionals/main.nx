@@ -1,0 +1,38 @@
+use { println } from compat.io
+
+compat main(): void {
+    c x = 10
+
+    if (eqi64(x, 10)) {
+        println("x is ten")
+    }
+
+    c y = 5
+    if (gti64(y, 3)) {
+        println("y is greater than 3")
+    } else {
+        println("y is not greater than 3")
+    }
+
+    c z = 0
+    if (eqi64(z, 1)) {
+        println("z is one")
+    } else {
+        if (eqi64(z, 0)) {
+            println("z is zero")
+        } else {
+            println("z is something else")
+        }
+    }
+
+    c flag = true
+    if (flag) {
+        println("flag is true")
+    }
+
+    if (not(flag)) {
+        println("this should not print")
+    } else {
+        println("flag was not false")
+    }
+}

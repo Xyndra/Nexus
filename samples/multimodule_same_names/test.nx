@@ -1,0 +1,104 @@
+// Tests for the main same_names module
+// Tests that functions with same names in different modules work correctly
+
+// Module-level imports for testing
+use module_a
+use module_b
+
+// Test that module_a.process and module_b.process give different results
+std test_process_differs(): bool {
+    c result_a = module_a.process(5)
+    c result_b = module_b.process(5)
+
+    // module_a multiplies by 2, module_b multiplies by 3
+    c check_a = eqi64(result_a, 10)
+    c check_b = eqi64(result_b, 15)
+    c check_different = nei64(result_a, result_b)
+
+    and(and(check_a, check_b), check_different)
+}
+
+// Test that module_a.compute and module_b.compute give different results
+std test_compute_differs(): bool {
+    c result_a = module_a.compute(10, 20)
+    c result_b = module_b.compute(10, 20)
+
+    // module_a: a + b + 100 = 130
+    // module_b: a - b + 50 = 40
+    c check_a = eqi64(result_a, 130)
+    c check_b = eqi64(result_b, 40)
+    c check_different = nei64(result_a, result_b)
+
+    and(and(check_a, check_b), check_different)
+}
+
+// Test that module_a.transform and module_b.transform give different results
+std test_transform_differs(): bool {
+    c result_a = module_a.transform(4)
+    c result_b = module_b.transform(4)
+
+    // module_a: square = 16
+    // module_b: cube = 64
+    c check_a = eqi64(result_a, 16)
+    c check_b = eqi64(result_b, 64)
+    c check_different = nei64(result_a, result_b)
+
+    and(and(check_a, check_b), check_different)
+}
+
+// Test that module_a.get_value and module_b.get_value give different results
+std test_get_value_differs(): bool {
+    c result_a = module_a.get_value()
+    c result_b = module_b.get_value()
+
+    // module_a: 42
+    // module_b: 99
+    c check_a = eqi64(result_a, 42)
+    c check_b = eqi64(result_b, 99)
+    c check_different = nei64(result_a, result_b)
+
+    and(and(check_a, check_b), check_different)
+}
+
+// Test composite functions work correctly within their own modules
+std test_process_and_transform_differs(): bool {
+    c result_a = module_a.process_and_transform(3)
+    c result_b = module_b.process_and_transform(3)
+
+    // module_a: process(3)=6, transform(6)=36
+    // module_b: process(3)=9, transform(9)=729
+    c check_a = eqi64(result_a, 36)
+    c check_b = eqi64(result_b, 729)
+    c check_different = nei64(result_a, result_b)
+
+    and(and(check_a, check_b), check_different)
+}
+
+// Test cross-module function chaining
+std test_cross_module_chaining(): bool {
+    // Apply module_a.process then module_b.transform
+    c chain1 = module_b.transform(module_a.process(2))
+    // module_a.process(2) = 4, module_b.transform(4) = 64
+    c check1 = eqi64(chain1, 64)
+
+    // Apply module_b.process then module_a.transform
+    c chain2 = module_a.transform(module_b.process(2))
+    // module_b.process(2) = 6, module_a.transform(6) = 36
+    c check2 = eqi64(chain2, 36)
+
+    and(check1, check2)
+}
+
+// Test that calling the same function multiple times is consistent
+std test_consistency(): bool {
+    c first_a = module_a.get_value()
+    c second_a = module_a.get_value()
+    c first_b = module_b.get_value()
+    c second_b = module_b.get_value()
+
+    c check_a_consistent = eqi64(first_a, second_a)
+    c check_b_consistent = eqi64(first_b, second_b)
+    c check_still_different = nei64(first_a, first_b)
+
+    and(and(check_a_consistent, check_b_consistent), check_still_different)
+}
