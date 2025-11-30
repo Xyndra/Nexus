@@ -1,0 +1,10 @@
+name = "Nexus"
+grammar = "nexus"
+path_suffixes = ["nx"]
+line_comments = ["// "]
+tab_size = 4
+brackets = [
+    { start = "(", end = ")", close = true, newline = true },
+    { start = "{", end = "}", close = true, newline = true },
+    { start = "[", end = "]", close = true, newline = true },
+]

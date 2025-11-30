@@ -1,0 +1,3 @@
+[submodule "tree-sitter-nexus"]
+	path = tree-sitter-nexus
+	url = https://github.com/Xyndra/tree-sitter-nexus

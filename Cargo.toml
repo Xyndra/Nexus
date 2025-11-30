@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 
+exclude = [
+    "editors/zed",
+    "tree-sitter-nexus",
+]
+
 members = [
     "crates/nexus-core",
     "crates/nexus-lexer",
@@ -9,7 +14,7 @@ members = [
     "crates/nexus-permissions",
     "crates/nexus-interpreter",
     "crates/nexus-sandbox",
-    "crates/nexus-lsp",
+    "crates/nexus-lsp-server",
     "crates/nexus-cli",
     "crates/nexus-test-runner",
     "crates/nexus-project",
@@ -29,7 +34,6 @@ nexus-types = { path = "crates/nexus-types" }
 nexus-permissions = { path = "crates/nexus-permissions" }
 nexus-interpreter = { path = "crates/nexus-interpreter" }
 nexus-sandbox = { path = "crates/nexus-sandbox" }
-nexus-lsp = { path = "crates/nexus-lsp" }
 nexus-project = { path = "crates/nexus-project" }
 
 thiserror = "2"
