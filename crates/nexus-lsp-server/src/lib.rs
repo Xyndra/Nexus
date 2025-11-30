@@ -4,7 +4,7 @@
 //! code completion, diagnostics, hover information, and more.
 
 use nexus_core::{Diagnostics, Span};
-use nexus_parser::{Program, parse};
+use nexus_parser::{Block, ElseClause, Item, Program, Statement, parse};
 use nexus_types::TypeRegistry;
 use std::collections::HashMap;
 
@@ -273,7 +273,6 @@ impl Lsp {
             "defer",
             "subscope",
             "goto",
-            "break",
             "unknown",
             "void",
             "bool",
@@ -495,13 +494,91 @@ impl Lsp {
             diagnostics.push(e.into());
         }
 
-        // Additional semantic checks would go here
-        // - Type checking
-        // - Color violation detection
-        // - Underscore prefix warnings
-        // etc.
+        // Semantic checks
+        if let Some(program) = ast {
+            // Check for return statements with values inside subscopes
+            for item in &program.items {
+                match item {
+                    Item::Function(func) => {
+                        Self::check_returns_in_block(&func.body, 0, &mut diagnostics);
+                    }
+                    Item::Method(method) => {
+                        Self::check_returns_in_block(&method.body, 0, &mut diagnostics);
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         diagnostics
+    }
+
+    /// Check for return statements with values inside subscopes
+    fn check_returns_in_block(block: &Block, subscope_depth: usize, diagnostics: &mut Diagnostics) {
+        for stmt in &block.statements {
+            Self::check_returns_in_statement(stmt, subscope_depth, diagnostics);
+        }
+    }
+
+    /// Check a statement for invalid returns inside subscopes
+    fn check_returns_in_statement(
+        stmt: &Statement,
+        subscope_depth: usize,
+        diagnostics: &mut Diagnostics,
+    ) {
+        match stmt {
+            Statement::Return(ret) => {
+                if subscope_depth > 0 && ret.value.is_some() {
+                    diagnostics.error("Return inside a subscope cannot have a value", ret.span);
+                }
+            }
+            Statement::If(if_stmt) => {
+                Self::check_returns_in_block(&if_stmt.then_block, subscope_depth, diagnostics);
+                if let Some(else_clause) = &if_stmt.else_block {
+                    match else_clause {
+                        ElseClause::Block(block) => {
+                            Self::check_returns_in_block(block, subscope_depth, diagnostics);
+                        }
+                        ElseClause::ElseIf(else_if) => {
+                            Self::check_returns_in_block(
+                                &else_if.then_block,
+                                subscope_depth,
+                                diagnostics,
+                            );
+                            if let Some(inner_else) = &else_if.else_block {
+                                Self::check_else_clause(inner_else, subscope_depth, diagnostics);
+                            }
+                        }
+                    }
+                }
+            }
+            Statement::Subscope(subscope) => {
+                Self::check_returns_in_block(&subscope.body, subscope_depth + 1, diagnostics);
+            }
+            Statement::Block(block) => {
+                Self::check_returns_in_block(block, subscope_depth, diagnostics);
+            }
+            _ => {}
+        }
+    }
+
+    /// Check an else clause for invalid returns inside subscopes
+    fn check_else_clause(
+        else_clause: &ElseClause,
+        subscope_depth: usize,
+        diagnostics: &mut Diagnostics,
+    ) {
+        match else_clause {
+            ElseClause::Block(block) => {
+                Self::check_returns_in_block(block, subscope_depth, diagnostics);
+            }
+            ElseClause::ElseIf(else_if) => {
+                Self::check_returns_in_block(&else_if.then_block, subscope_depth, diagnostics);
+                if let Some(inner_else) = &else_if.else_block {
+                    Self::check_else_clause(inner_else, subscope_depth, diagnostics);
+                }
+            }
+        }
     }
 
     /// Convert a position to byte offset
@@ -630,5 +707,55 @@ mod tests {
         let symbols = lsp.document_symbols("file:///test.nx");
         assert!(symbols.iter().any(|s| s.name == "main"));
         assert!(symbols.iter().any(|s| s.name == "Player"));
+    }
+
+    #[test]
+    fn test_return_with_value_in_subscope_error() {
+        let mut lsp = Lsp::new();
+        lsp.open_document(
+            "file:///test.nx".to_string(),
+            r#"
+                std main(): void {
+                    subscope loop {
+                        if (true) {
+                            return 42
+                        }
+                        goto loop
+                    }
+                }
+            "#
+            .to_string(),
+            1,
+        );
+
+        let diagnostics = lsp.get_diagnostics("file:///test.nx").unwrap();
+        assert!(diagnostics.has_errors());
+        assert!(diagnostics.iter().any(|d| {
+            d.message
+                .contains("Return inside a subscope cannot have a value")
+        }));
+    }
+
+    #[test]
+    fn test_return_without_value_in_subscope_ok() {
+        let mut lsp = Lsp::new();
+        lsp.open_document(
+            "file:///test.nx".to_string(),
+            r#"
+                std main(): void {
+                    subscope loop {
+                        if (true) {
+                            return
+                        }
+                        goto loop
+                    }
+                }
+            "#
+            .to_string(),
+            1,
+        );
+
+        let diagnostics = lsp.get_diagnostics("file:///test.nx").unwrap();
+        assert!(!diagnostics.has_errors());
     }
 }

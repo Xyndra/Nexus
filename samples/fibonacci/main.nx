@@ -17,7 +17,7 @@ std fib_iterative(i64 n): i64 {
     m next = 0
     subscope loop {
         if (gti64(idx, n)) {
-            return b
+            return
         }
         next = addi64(a, b)
         a = b
@@ -30,28 +30,24 @@ std fib_iterative(i64 n): i64 {
 
 compat main(): void {
     println("Fibonacci sequence (recursive):")
-    println(fib_recursive(0))
-    println(fib_recursive(1))
-    println(fib_recursive(2))
-    println(fib_recursive(3))
-    println(fib_recursive(4))
-    println(fib_recursive(5))
-    println(fib_recursive(6))
-    println(fib_recursive(7))
-    println(fib_recursive(8))
-    println(fib_recursive(9))
-    println(fib_recursive(10))
+    m i = 0
+    subscope for {
+        if (gti64(i, 20)) {
+            return
+        }
+        println(fib_recursive(i))
+        i = addi64(i, 1)
+        goto for
+    }
 
     println("Fibonacci sequence (iterative):")
-    println(fib_iterative(0))
-    println(fib_iterative(1))
-    println(fib_iterative(2))
-    println(fib_iterative(3))
-    println(fib_iterative(4))
-    println(fib_iterative(5))
-    println(fib_iterative(6))
-    println(fib_iterative(7))
-    println(fib_iterative(8))
-    println(fib_iterative(9))
-    println(fib_iterative(10))
+    m j = 0
+    subscope for2 {
+        if (gti64(j, 20)) {
+            return
+        }
+        println(fib_iterative(j))
+        j = addi64(j, 1)
+        goto for2
+    }
 }

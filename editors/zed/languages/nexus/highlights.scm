@@ -12,7 +12,6 @@
   "defer"
   "subscope"
   "goto"
-  "break"
   "unknown"
   "dyn"
   "macro"
@@ -97,9 +96,6 @@
 
 ; Goto labels
 (goto_statement (identifier) @label)
-
-; Break labels
-(break_statement (identifier) @label)
 
 ; Imports
 (use_symbol_list (identifier) @function)

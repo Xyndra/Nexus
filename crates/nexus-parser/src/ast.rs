@@ -351,8 +351,6 @@ pub enum Statement {
     Subscope(SubscopeStmt),
     /// Goto statement
     Goto(GotoStmt),
-    /// Break statement
-    Break(BreakStmt),
     /// Block statement
     Block(Block),
 }
@@ -368,7 +366,6 @@ impl Statement {
             Statement::Defer(d) => &d.span,
             Statement::Subscope(s) => &s.span,
             Statement::Goto(g) => &g.span,
-            Statement::Break(b) => &b.span,
             Statement::Block(b) => &b.span,
         }
     }
@@ -499,15 +496,6 @@ pub struct SubscopeStmt {
 pub struct GotoStmt {
     /// Label to jump to
     pub label: String,
-    /// Source span
-    pub span: Span,
-}
-
-/// Break statement
-#[derive(Debug, Clone)]
-pub struct BreakStmt {
-    /// Optional label to break to
-    pub label: Option<String>,
     /// Source span
     pub span: Span,
 }

@@ -611,7 +611,6 @@ impl Parser {
             TokenKind::Defer => return self.parse_defer_statement(),
             TokenKind::Subscope => return self.parse_subscope_statement(),
             TokenKind::Goto => return self.parse_goto_statement(),
-            TokenKind::Break => return self.parse_break_statement(),
             TokenKind::LeftBrace => return self.parse_block().map(Statement::Block),
             _ => {}
         }
@@ -882,24 +881,6 @@ impl Parser {
         let label = self.expect_identifier()?;
 
         Ok(Statement::Goto(GotoStmt {
-            label,
-            span: start_span.to(&self.previous_span()),
-        }))
-    }
-
-    /// Parse a break statement.
-    fn parse_break_statement(&mut self) -> Result<Statement, NexusError> {
-        let start_span = self.current_span();
-        self.expect(TokenKind::Break)?;
-
-        let label = if let TokenKind::Identifier(s) = self.peek_kind() {
-            self.advance();
-            Some(s)
-        } else {
-            None
-        };
-
-        Ok(Statement::Break(BreakStmt {
             label,
             span: start_span.to(&self.previous_span()),
         }))

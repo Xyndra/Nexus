@@ -63,7 +63,6 @@ pub enum TokenKind {
     Defer,
     Subscope,
     Goto,
-    Break,
 
     // Import keywords
     Use,
@@ -142,7 +141,6 @@ impl TokenKind {
             TokenKind::Defer => "'defer'",
             TokenKind::Subscope => "'subscope'",
             TokenKind::Goto => "'goto'",
-            TokenKind::Break => "'break'",
             TokenKind::Use => "'use'",
             TokenKind::From => "'from'",
             TokenKind::Void => "'void'",
@@ -228,7 +226,6 @@ impl TokenKind {
                 | TokenKind::Defer
                 | TokenKind::Subscope
                 | TokenKind::Goto
-                | TokenKind::Break
                 | TokenKind::Use
                 | TokenKind::From
                 | TokenKind::Void

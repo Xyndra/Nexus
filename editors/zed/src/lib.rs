@@ -29,6 +29,16 @@ impl zed::Extension for NexusExtension {
         language_server_id: &LanguageServerId,
         _worktree: &zed::Worktree,
     ) -> Result<Command> {
+        // Always check for local override first, bypassing cache
+        let local_binary = self.get_local_binary_path();
+        if fs::metadata(&local_binary).is_ok() {
+            return Ok(Command {
+                command: local_binary,
+                args: vec![],
+                env: vec![],
+            });
+        }
+
         if let Some(path) = &self.cached_binary_path {
             if fs::metadata(path).is_ok() {
                 return Ok(Command {
@@ -51,6 +61,15 @@ impl zed::Extension for NexusExtension {
 }
 
 impl NexusExtension {
+    fn get_local_binary_path(&self) -> String {
+        let (os, _arch) = current_platform();
+        let binary_name = match os {
+            Os::Windows => "local-nexus-lsp.exe",
+            _ => "local-nexus-lsp",
+        };
+        format!("./{}", binary_name)
+    }
+
     fn get_lsp_binary(&self, language_server_id: &LanguageServerId) -> Result<String> {
         let (os, arch) = current_platform();
 
@@ -63,17 +82,6 @@ impl NexusExtension {
         };
 
         let binary_path = format!("./{}", binary_name);
-
-        // Check if we have a local override binary
-        let local_binary = format!("./local-{}", binary_name);
-        if fs::metadata(&local_binary).is_ok() {
-            // Copy to the expected location
-            fs::copy(&local_binary, &binary_path)
-                .map_err(|e| format!("Failed to copy local binary: {}", e))?;
-            zed::make_file_executable(&binary_path)
-                .map_err(|e| format!("Failed to make binary executable: {}", e))?;
-            return Ok(binary_path);
-        }
 
         // Check if binary already exists
         if fs::metadata(&binary_path).is_ok() {

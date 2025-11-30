@@ -23,7 +23,7 @@ fn main() {
     // Determine the Zed extensions directory based on OS
     let zed_extension_dir = get_zed_extension_dir();
     if let Some(dir) = zed_extension_dir {
-        let nexus_ext_dir = dir.join("installed").join("nexus");
+        let nexus_ext_dir = dir.join("work").join("nexus");
 
         // Only proceed if the nexus extension is installed
         if nexus_ext_dir.exists() {

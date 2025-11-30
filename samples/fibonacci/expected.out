@@ -10,6 +10,16 @@ Fibonacci sequence (recursive):
 21
 34
 55
+89
+144
+233
+377
+610
+987
+1597
+2584
+4181
+6765
 Fibonacci sequence (iterative):
 0
 1
@@ -22,3 +32,13 @@ Fibonacci sequence (iterative):
 21
 34
 55
+89
+144
+233
+377
+610
+987
+1597
+2584
+4181
+6765

@@ -26,7 +26,7 @@ std count_up_to(i64 n): i64 {
     m i = 1
     subscope loop {
         if (gti64(i, n)) {
-            return sum
+            return
         }
         sum = addi64(sum, i)
         i = addi64(i, 1)
