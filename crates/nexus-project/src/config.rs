@@ -79,11 +79,11 @@ impl ProjectConfig {
             message: format!("Failed to read config file '{}': {}", path.display(), e),
         })?;
 
-        Self::from_str(&content)
+        Self::parse_str(&content)
     }
 
     /// Parse a project configuration from a string
-    pub fn from_str(content: &str) -> NexusResult<Self> {
+    pub fn parse_str(content: &str) -> NexusResult<Self> {
         let raw: RawProjectConfig = json5::from_str(content).map_err(|e| NexusError::IoError {
             message: format!("Failed to parse nexus.json5: {}", e),
         })?;
@@ -191,7 +191,7 @@ mod tests {
             deps: []
         }"#;
 
-        let config = ProjectConfig::from_str(content).unwrap();
+        let config = ProjectConfig::parse_str(content).unwrap();
         assert_eq!(config.module_name, "myproject");
         assert!(config.dependencies.is_empty());
     }
@@ -207,7 +207,7 @@ mod tests {
             deps: []
         }"#;
 
-        let config = ProjectConfig::from_str(content).unwrap();
+        let config = ProjectConfig::parse_str(content).unwrap();
         assert!(config.has_compat_io_permission("main"));
         assert!(config.has_compat_io_permission("utils"));
         assert!(!config.has_compat_io_permission("other"));
@@ -225,7 +225,7 @@ mod tests {
             ]
         }"#;
 
-        let config = ProjectConfig::from_str(content).unwrap();
+        let config = ProjectConfig::parse_str(content).unwrap();
         assert_eq!(config.dependencies.len(), 2);
     }
 
@@ -240,7 +240,7 @@ mod tests {
             deps: []
         }"#;
 
-        let config = ProjectConfig::from_str(content).unwrap();
+        let config = ProjectConfig::parse_str(content).unwrap();
         let map = config.permissions_map();
 
         assert_eq!(
