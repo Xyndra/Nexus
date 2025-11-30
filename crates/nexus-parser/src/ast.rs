@@ -95,6 +95,8 @@ pub struct FunctionDef {
     pub color: FunctionColor,
     /// Function name
     pub name: String,
+    /// Span of just the function name
+    pub name_span: Span,
     /// Parameters
     pub params: Vec<Parameter>,
     /// Return type
@@ -120,6 +122,8 @@ pub struct MethodDef {
     pub receiver_name: String,
     /// Method name
     pub name: String,
+    /// Span of just the method name
+    pub name_span: Span,
     /// Parameters (not including receiver)
     pub params: Vec<Parameter>,
     /// Return type
@@ -150,6 +154,8 @@ pub struct Parameter {
 pub struct StructDefAst {
     /// Struct name
     pub name: String,
+    /// Span of just the struct name
+    pub name_span: Span,
     /// Interfaces this struct implements
     pub implements: Vec<String>,
     /// Fields
@@ -178,6 +184,8 @@ pub struct FieldDef {
 pub struct InterfaceDefAst {
     /// Interface name
     pub name: String,
+    /// Span of just the interface name
+    pub name_span: Span,
     /// Extended interfaces
     pub extends: Vec<String>,
     /// Method signatures

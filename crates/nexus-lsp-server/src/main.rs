@@ -187,7 +187,7 @@ fn handle_notification(
             let content = params.text_document.text;
             let version = params.text_document.version;
 
-            lsp.open_document(uri.clone(), content, version);
+            lsp.open_document(&uri, &content, version);
             publish_diagnostics(lsp, &uri, sender)?;
         }
         DidChangeTextDocument::METHOD => {
@@ -195,7 +195,7 @@ fn handle_notification(
             let uri = params.text_document.uri.to_string();
 
             if let Some(change) = params.content_changes.into_iter().last() {
-                lsp.update_document(&uri, change.text, params.text_document.version);
+                lsp.update_document(&uri, &change.text, params.text_document.version);
                 publish_diagnostics(lsp, &uri, sender)?;
             }
         }
@@ -293,15 +293,37 @@ fn handle_completion(lsp: &Lsp, params: CompletionParams) -> Option<CompletionRe
 }
 
 fn handle_goto_definition(
-    _lsp: &Lsp,
+    lsp: &Lsp,
     params: GotoDefinitionParams,
 ) -> Option<GotoDefinitionResponse> {
-    // TODO: Implement goto definition using nexus-lsp
-    debug!(
-        "Goto definition requested for {:?}",
-        params.text_document_position_params
-    );
-    None
+    let uri = params
+        .text_document_position_params
+        .text_document
+        .uri
+        .to_string();
+    let position = params.text_document_position_params.position;
+
+    let location = lsp.goto_definition(
+        &uri,
+        nexus_lsp_server::Position {
+            line: position.line,
+            character: position.character,
+        },
+    )?;
+
+    Some(GotoDefinitionResponse::Scalar(lsp_types::Location {
+        uri: Url::parse(&location.uri).ok()?,
+        range: LspRange {
+            start: LspPosition {
+                line: location.range.start.line,
+                character: location.range.start.character,
+            },
+            end: LspPosition {
+                line: location.range.end.line,
+                character: location.range.end.character,
+            },
+        },
+    }))
 }
 
 fn handle_document_symbols(

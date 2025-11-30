@@ -116,12 +116,12 @@ fn print_help() {
         r#"Nexus Programming Language
 
 USAGE:
-    nexus [OPTIONS] [FILE]
+    nexus [OPTIONS]
     nexus run <FILE_OR_DIR>
     nexus test <FILE_OR_DIR>
 
 SUBCOMMANDS:
-    run <path>              Run a file or directory (looks for main.nx)
+    run <path>              Run a file or directory (for dirs, looks for main.nx)
     test <path>             Run tests for a file or directory
 
 OPTIONS:
@@ -136,11 +136,12 @@ OPTIONS:
     --max-steps <N>         Maximum execution steps (for sandbox)
 
 EXAMPLES:
-    nexus hello.nx              Run a Nexus file
+    nexus run hello.nx          Run a Nexus file
+    nexus run hello             Run hello.nx (adds .nx extension)
     nexus run samples/hello     Run samples/hello/main.nx
     nexus test samples/arrays   Run tests for samples/arrays
     nexus -e "println(42)"      Execute code directly
-    nexus --ast hello.nx        Print the AST of a file
+    nexus run --ast hello.nx    Print the AST of a file
     nexus                       Start the REPL
 "#
     );
@@ -791,7 +792,12 @@ fn main() -> ExitCode {
             if let Some(code) = &config.eval {
                 run_source(code, &config)
             } else if let Some(file) = &config.file {
-                run_file(file, &config)
+                eprintln!(
+                    "Error: To run '{}', use 'nexus run {}', otherwise consider 'nexus -h'",
+                    file.display(),
+                    file.display()
+                );
+                return ExitCode::FAILURE;
             } else if config.repl {
                 run_repl()
             } else {

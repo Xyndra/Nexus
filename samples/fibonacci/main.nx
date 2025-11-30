@@ -1,31 +1,11 @@
 use { println } from compat.io
 
+// Recursive Fibonacci function
 std fib_recursive(i64 n): i64 {
     if (lei64(n, 1)) {
         return n
     }
     return addi64(fib_recursive(subi64(n, 1)), fib_recursive(subi64(n, 2)))
-}
-
-std fib_iterative(i64 n): i64 {
-    if (lei64(n, 1)) {
-        return n
-    }
-    m a = 0
-    m b = 1
-    m idx = 2
-    m next = 0
-    subscope loop {
-        if (gti64(idx, n)) {
-            return
-        }
-        next = addi64(a, b)
-        a = b
-        b = next
-        idx = addi64(idx, 1)
-        goto loop
-    }
-    return b
 }
 
 compat main(): void {

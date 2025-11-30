@@ -118,7 +118,9 @@ impl Parser {
         let start_span = self.current_span();
         self.expect(TokenKind::Struct)?;
 
+        let name_span = self.current_span();
         let name = self.expect_identifier()?;
+        let name_span = name_span.to(&self.previous_span());
 
         // Optional implements clause
         let implements = if self.check_identifier("impl") {
@@ -141,6 +143,7 @@ impl Parser {
 
         Ok(StructDefAst {
             name,
+            name_span,
             implements,
             fields,
             span: start_span.to(&self.previous_span()),
@@ -179,7 +182,9 @@ impl Parser {
         let start_span = self.current_span();
         self.expect(TokenKind::Interface)?;
 
+        let name_span = self.current_span();
         let name = self.expect_identifier()?;
+        let name_span = name_span.to(&self.previous_span());
 
         // Optional extends clause
         let extends = if self.check_identifier("extends") {
@@ -202,6 +207,7 @@ impl Parser {
 
         Ok(InterfaceDefAst {
             name,
+            name_span,
             extends,
             methods,
             span: start_span.to(&self.previous_span()),
@@ -252,7 +258,9 @@ impl Parser {
         }
 
         // Regular function
+        let name_span = self.current_span();
         let name = self.expect_identifier()?;
+        let name_span = name_span.to(&self.previous_span());
 
         self.expect(TokenKind::LeftParen)?;
         let params = self.parse_parameters()?;
@@ -268,6 +276,7 @@ impl Parser {
         Ok(Item::Function(FunctionDef {
             color,
             name,
+            name_span,
             params,
             return_type,
             return_contracts,
@@ -297,7 +306,9 @@ impl Parser {
 
         self.expect(TokenKind::RightParen)?;
 
+        let name_span = self.current_span();
         let name = self.expect_identifier()?;
+        let name_span = name_span.to(&self.previous_span());
 
         self.expect(TokenKind::LeftParen)?;
         let params = self.parse_parameters()?;
@@ -316,6 +327,7 @@ impl Parser {
             receiver_type,
             receiver_name,
             name,
+            name_span,
             params,
             return_type,
             return_contracts,
