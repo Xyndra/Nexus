@@ -780,6 +780,14 @@ impl Interpreter {
                     span: Some(call.span),
                 });
             }
+            // Check color permissions - compat.io builtins are compat color
+            self.permissions.check_color_call(
+                &self.current_module,
+                self.current_color,
+                FunctionColor::Compat,
+                &call.function,
+                call.span,
+            )?;
             let func = builtin.func;
             let mut args = Vec::new();
             for arg in &call.args {
