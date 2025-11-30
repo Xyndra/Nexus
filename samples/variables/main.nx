@@ -17,4 +17,9 @@ compat main(): void {
 
     c greeting = "Hello, Nexus!"
     println(greeting)
+
+    m mutable = 10
+    println(mutable)
+    mutable = addi64(mutable, 5)
+    println(mutable)
 }
