@@ -1,0 +1,6 @@
+{
+    mod: 'std',
+    main: 'lib.nx',
+    permissions: {},
+    deps: []
+}

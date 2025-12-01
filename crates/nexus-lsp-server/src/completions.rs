@@ -5,7 +5,7 @@
 
 use nexus_parser::Program;
 
-use crate::builtins::BUILTINS;
+use crate::builtins;
 use crate::types::{CompletionItem, CompletionKind};
 
 /// Get completion items for a document at the given position.
@@ -83,32 +83,42 @@ fn add_keywords(items: &mut Vec<CompletionItem>) {
 
 /// Add builtin functions to the completion list.
 fn add_builtins(items: &mut Vec<CompletionItem>) {
-    for builtin in BUILTINS.values() {
-        let params: Vec<String> = builtin
-            .params
-            .iter()
-            .map(|(name, ty)| format!("{}: {}", name, ty))
-            .collect();
+    // Add all builtins (core + compat)
+    for name in builtins::all_builtin_names() {
+        if let Some(info) = builtins::get_any_builtin(name) {
+            let builtin = info.builtin;
+            let params: Vec<String> = builtin
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.ty))
+                .collect();
 
-        let signature = format!(
-            "{}({}): {}",
-            builtin.name,
-            params.join(", "),
-            builtin.return_type
-        );
+            let signature = format!(
+                "{}({}): {}",
+                builtin.name,
+                params.join(", "),
+                builtin.return_type
+            );
 
-        let documentation = format!(
-            "{}\n\nSignature: `{}`\n\n{}",
-            builtin.description, signature, builtin.documentation
-        );
+            let import_note = if let Some(module) = builtin.required_import {
+                format!("\n\n**Requires:** `use {{ {} }} from {}`", name, module)
+            } else {
+                String::new()
+            };
 
-        items.push(CompletionItem {
-            label: builtin.name.to_string(),
-            kind: CompletionKind::Builtin,
-            detail: Some("builtin function".to_string()),
-            documentation: Some(documentation),
-            insert_text: Some(format!("{}($0)", builtin.name)),
-        });
+            let documentation = format!(
+                "{}\n\nSignature: `{}`\n\n{}{}",
+                info.description, signature, info.documentation, import_note
+            );
+
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: CompletionKind::Builtin,
+                detail: Some("builtin function".to_string()),
+                documentation: Some(documentation),
+                insert_text: Some(format!("{}($0)", name)),
+            });
+        }
     }
 }
 

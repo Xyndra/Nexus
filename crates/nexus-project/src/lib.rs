@@ -12,7 +12,9 @@ mod test_runner;
 
 pub use config::{ProjectConfig, ProjectPermissions};
 pub use dependency::{Dependency, DependencyKind};
-pub use resolver::{DependencyResolver, ModuleSource, ResolvedDependency, ResolvedProject};
+pub use resolver::{
+    DependencyResolver, ModuleSource, ResolvedDependency, ResolvedProject, find_stdlib_path,
+};
 pub use test_runner::{TestDiscovery, TestFunction, TestResult, TestRunner, TestSummary};
 
 use nexus_core::{NexusError, NexusResult};
@@ -38,6 +40,13 @@ pub fn load_and_resolve_project(project_dir: &Path) -> NexusResult<ResolvedProje
     let config = load_project(project_dir)?;
     let resolver = DependencyResolver::new(project_dir.to_path_buf());
     resolver.resolve(&config)
+}
+
+/// Load and resolve a project with all its dependencies, including the standard library
+pub fn load_and_resolve_project_with_stdlib(project_dir: &Path) -> NexusResult<ResolvedProject> {
+    let config = load_project(project_dir)?;
+    let resolver = DependencyResolver::new(project_dir.to_path_buf());
+    resolver.resolve_with_stdlib(&config)
 }
 
 #[cfg(test)]

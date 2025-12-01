@@ -1,0 +1,145 @@
+// Standard library string utilities
+// Module: std.util.strings
+
+// Format macro - converts a template string with ${varname} placeholders
+// into a concatenation of string literals and stringified variables.
+//
+// Usage: $format("Name: ${name} Age: ${age}")
+// Generates: concat(concat(concat("Name: ", str(name)), " Age: "), str(age))
+
+$format([dyn]rune template): macro {
+    m result = ""
+    m i = 0
+    c template_len = len(template)
+    m first = true
+    m current_literal = ""
+    m in_placeholder = false
+    m placeholder_name = ""
+
+    subscope parse {
+        // Check if we're done
+        if (gei64(i, template_len)) {
+            return
+        }
+
+        c ch = template[@unchecked i]
+
+        // If we're inside a placeholder ${...}
+        if (in_placeholder) {
+            // Check for } end of placeholder
+            if (eqr(ch, "}"[0])) {
+                // End of placeholder, add str(varname)
+                if (first) {
+                    result = concat("str(", concat(placeholder_name, ")"))
+                    first = false
+                } else {
+                    result = concat(concat(concat("concat(", result), ", str("), concat(placeholder_name, "))"))
+                }
+                in_placeholder = false
+                placeholder_name = ""
+            } else {
+                // Accumulate placeholder name
+                placeholder_name = push(placeholder_name, ch)
+            }
+            i = addi64(i, 1)
+            goto parse
+        }
+
+        // Check for ${ start of placeholder
+        if (eqr(ch, "$"[0])) {
+            if (lti64(addi64(i, 1), template_len)) {
+                c next_ch = template[@unchecked addi64(i, 1)]
+                if (eqr(next_ch, "{"[0])) {
+                    // Found ${, flush current literal if any
+                    if (gti64(len(current_literal), 0)) {
+                        m escaped = "\""
+                        m k = 0
+                        c lit_len = len(current_literal)
+                        subscope escape_lit {
+                            if (gei64(k, lit_len)) {
+                                return
+                            }
+                            c ech = current_literal[@unchecked k]
+                            if (eqr(ech, "\""[0])) {
+                                escaped = concat(escaped, "\\\"")
+                            } else {
+                                if (eqr(ech, "\\"[0])) {
+                                    escaped = concat(escaped, "\\\\")
+                                } else {
+                                    if (eqr(ech, "\n"[0])) {
+                                        escaped = concat(escaped, "\\n")
+                                    } else {
+                                        escaped = push(escaped, ech)
+                                    }
+                                }
+                            }
+                            k = addi64(k, 1)
+                            goto escape_lit
+                        }
+                        escaped = concat(escaped, "\"")
+
+                        if (first) {
+                            result = escaped
+                            first = false
+                        } else {
+                            result = concat(concat(concat("concat(", result), ", "), concat(escaped, ")"))
+                        }
+                        current_literal = ""
+                    }
+                    in_placeholder = true
+                    placeholder_name = ""
+                    i = addi64(i, 2)
+                    goto parse
+                }
+            }
+        }
+
+        // Regular character - accumulate literal
+        current_literal = push(current_literal, ch)
+        i = addi64(i, 1)
+        goto parse
+    }
+
+    // Flush any remaining literal
+    if (gti64(len(current_literal), 0)) {
+        m escaped = "\""
+        m k = 0
+        c lit_len = len(current_literal)
+        subscope escape_final {
+            if (gei64(k, lit_len)) {
+                return
+            }
+            c ech = current_literal[@unchecked k]
+            if (eqr(ech, "\""[0])) {
+                escaped = concat(escaped, "\\\"")
+            } else {
+                if (eqr(ech, "\\"[0])) {
+                    escaped = concat(escaped, "\\\\")
+                } else {
+                    if (eqr(ech, "\n"[0])) {
+                        escaped = concat(escaped, "\\n")
+                    } else {
+                        escaped = push(escaped, ech)
+                    }
+                }
+            }
+            k = addi64(k, 1)
+            goto escape_final
+        }
+        escaped = concat(escaped, "\"")
+
+        if (first) {
+            result = escaped
+            first = false
+        } else {
+            result = concat(concat(concat("concat(", result), ", "), concat(escaped, ")"))
+        }
+    }
+
+    // If empty template, return empty string
+    if (first) {
+        return "\"\""
+    }
+
+    return result
+}

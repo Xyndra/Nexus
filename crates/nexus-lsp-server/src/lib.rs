@@ -9,6 +9,7 @@ mod diagnostics;
 mod document_symbols;
 mod goto_definition;
 mod hover;
+mod macro_expansion;
 mod types;
 mod utils;
 
@@ -24,7 +25,7 @@ pub use types::{
     SymbolKind,
 };
 
-use diagnostics::DiagnosticsConfig;
+use diagnostics::{DiagnosticsConfig, FunctionContext, MacroContext};
 
 /// Configuration for the LSP server.
 #[derive(Debug, Clone)]
@@ -101,14 +102,10 @@ impl Lsp {
             version,
         };
 
-        // Compute diagnostics
-        let diag_config = DiagnosticsConfig {
-            enabled: self.config.enable_diagnostics,
-        };
-        let diags = diagnostics::compute_diagnostics(content, &ast, &diag_config);
-        self.diagnostics.insert(uri.to_string(), diags);
-
         self.documents.insert(uri.to_string(), doc);
+
+        // Compute diagnostics with macro context from all documents
+        self.recompute_diagnostics(uri);
     }
 
     /// Update a document in the LSP server.
@@ -121,12 +118,40 @@ impl Lsp {
             doc.version = version;
         }
 
-        // Recompute diagnostics
+        // Recompute diagnostics with macro context from all documents
+        self.recompute_diagnostics(uri);
+    }
+
+    /// Recompute diagnostics for a document with access to all other documents for macro/function resolution
+    fn recompute_diagnostics(&mut self, uri: &str) {
         let diag_config = DiagnosticsConfig {
             enabled: self.config.enable_diagnostics,
         };
-        let diags = diagnostics::compute_diagnostics(content, &ast, &diag_config);
-        self.diagnostics.insert(uri.to_string(), diags);
+
+        // Build documents map for macro and function context
+        let documents_map: HashMap<String, (String, Option<Program>)> = self
+            .documents
+            .iter()
+            .map(|(u, doc)| (u.clone(), (doc.content.clone(), doc.ast.clone())))
+            .collect();
+
+        // Build macro context from all documents
+        let macro_context = MacroContext::from_documents(&documents_map);
+
+        // Build function context from all documents
+        let function_context = FunctionContext::from_documents(&documents_map);
+
+        // Get the document content and ast
+        if let Some(doc) = self.documents.get(uri) {
+            let diags = diagnostics::compute_diagnostics_with_context(
+                &doc.content,
+                &doc.ast,
+                &diag_config,
+                Some(&macro_context),
+                Some(&function_context),
+            );
+            self.diagnostics.insert(uri.to_string(), diags);
+        }
     }
 
     /// Close a document in the LSP server.

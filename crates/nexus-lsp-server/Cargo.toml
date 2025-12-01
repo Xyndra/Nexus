@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 description = "Language Server Protocol server for the Nexus programming language"
 
+[features]
+default = ["builtin-docs"]
+builtin-docs = ["nexus-interpreter/builtin-docs"]
+
 [[bin]]
 name = "nexus-lsp"
 path = "src/main.rs"
@@ -12,6 +16,7 @@ path = "src/main.rs"
 nexus-types.workspace = true
 nexus-parser.workspace = true
 nexus-core.workspace = true
+nexus-interpreter = { workspace = true, features = ["builtin-docs"] }
 
 lsp-server = "0.7"
 lsp-types = "0.95"

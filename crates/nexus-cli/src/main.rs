@@ -6,7 +6,7 @@ use nexus_core::NexusError;
 use nexus_interpreter::{Interpreter, InterpreterConfig, Value};
 use nexus_parser::parse;
 use nexus_permissions::{CompatPermission, Permission, PermissionSet, PlatPermission};
-use nexus_project::{ProjectConfig, ResolvedProject, load_and_resolve_project};
+use nexus_project::{ProjectConfig, ResolvedProject, load_and_resolve_project_with_stdlib};
 use nexus_sandbox::Sandbox;
 use std::env;
 use std::fs;
@@ -294,6 +294,11 @@ fn run_resolved_project(
             interpreter.register_module_function(&source.name, &func.name);
         }
 
+        // Register all macros from this module
+        for macro_def in program.macros() {
+            interpreter.register_module_macro(&source.name, &macro_def.name);
+        }
+
         parsed_programs.push((&source.name, program));
     }
 
@@ -329,7 +334,7 @@ fn run_path(path: &Path, cli_config: &CliConfig) -> Result<(), NexusError> {
     if project_config_path.exists() {
         // Use the project system for proper module handling
         let project_dir = project_config_path.parent().unwrap_or(path);
-        let resolved = load_and_resolve_project(project_dir)?;
+        let resolved = load_and_resolve_project_with_stdlib(project_dir)?;
 
         // AST mode: just print and exit
         if cli_config.ast {
@@ -437,7 +442,7 @@ fn test_path(path: &Path, cli_config: &CliConfig) -> Result<(), NexusError> {
 
     if project_config_path.exists() {
         // Use the project system for proper module handling
-        let resolved = load_and_resolve_project(&base_path)?;
+        let resolved = load_and_resolve_project_with_stdlib(&base_path)?;
         return test_resolved_project(&resolved, cli_config);
     }
 
@@ -551,6 +556,11 @@ fn test_resolved_project(
                 }
                 all_test_functions.push(func.name.clone());
             }
+        }
+
+        // Register all macros from this module
+        for macro_def in program.macros() {
+            interpreter.register_module_macro(&source.name, &macro_def.name);
         }
 
         parsed_programs.push((&source.name, program));

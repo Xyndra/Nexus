@@ -1,6 +1,6 @@
 id = "nexus"
 name = "Nexus"
-description = "Language support for the Nexus programming language"
+description = "Language support for the Nexus (.nx) programming language"
 version = "0.1.0"
 schema_version = 1
 authors = ["Xyndra"]

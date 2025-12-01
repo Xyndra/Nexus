@@ -1,0 +1,17 @@
+// Nexus Standard Library
+// Module: std
+//
+// This is the root module of the Nexus standard library.
+// Submodules are available through the std.* namespace.
+//
+// Available submodules:
+// - std.util: General utility functions and macros
+//   - std.util.strings: String formatting utilities ($format macro)
+//
+// Usage:
+//   use { $format } from std.util.strings
+//
+//   std main(): void {
+//       m name = "World"
+//       println($format("Hello, ${name}!"))
+//   }

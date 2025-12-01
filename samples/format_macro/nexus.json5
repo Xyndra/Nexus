@@ -1,0 +1,8 @@
+{
+    mod: 'format_macro',
+    main: 'main.nx',
+    permissions: {
+        compatIO: ['format_macro']
+    },
+    deps: []
+}

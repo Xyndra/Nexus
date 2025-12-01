@@ -1,10 +1,15 @@
-//! Utility builtins (typeof, is_none, unwrap, panic, assert)
+//! Utility builtins (typeof, is_none, unwrap, panic, assert, str)
 
 use crate::Value;
 use nexus_core::{NexusError, NexusResult, Span};
 
 pub fn type_of(args: &[Value], _span: Span) -> NexusResult<Value> {
     Ok(Value::String(args[0].type_name().chars().collect()))
+}
+
+/// Convert any value to its string representation
+pub fn str(args: &[Value], _span: Span) -> NexusResult<Value> {
+    Ok(Value::String(args[0].to_display_string().chars().collect()))
 }
 
 pub fn is_none(args: &[Value], _span: Span) -> NexusResult<Value> {

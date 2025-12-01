@@ -9,6 +9,7 @@
 //! - `i32_ops` - 32-bit integer operations
 //! - `f64_ops` - 64-bit float operations
 //! - `f32_ops` - 32-bit float operations
+//! - `rune_ops` - Rune comparison operations
 //! - `conversions` - Type conversion functions
 //! - `collections` - Array/string/bytes operations
 //! - `utility` - Utility functions (typeof, assert, etc.)
@@ -25,11 +26,52 @@ mod i32_ops;
 mod i64_ops;
 mod logical;
 pub(crate) mod macros;
+mod rune_ops;
 mod utility;
 
 use crate::Value;
-use nexus_core::{NexusResult, Span};
+use nexus_core::{FunctionColor, NexusResult, Span};
 use std::collections::HashMap;
+
+#[cfg(feature = "builtin-docs")]
+use serde::Deserialize;
+#[cfg(feature = "builtin-docs")]
+use std::sync::LazyLock;
+
+/// Documentation for a builtin function, loaded from JSON5
+#[cfg(feature = "builtin-docs")]
+#[derive(Debug, Clone, Deserialize)]
+pub struct BuiltinDocs {
+    /// Short description
+    pub description: String,
+    /// Detailed documentation
+    pub documentation: String,
+}
+
+/// Static map of builtin documentation, loaded from docs.json5
+#[cfg(feature = "builtin-docs")]
+static BUILTIN_DOCS: LazyLock<HashMap<String, BuiltinDocs>> = LazyLock::new(|| {
+    let json5_content = include_str!("docs.json5");
+    json5::from_str(json5_content).unwrap_or_else(|e| {
+        eprintln!("Warning: Failed to parse builtin docs: {}", e);
+        HashMap::new()
+    })
+});
+
+/// Get documentation for a builtin by name
+#[cfg(feature = "builtin-docs")]
+pub fn get_builtin_docs(name: &str) -> Option<&'static BuiltinDocs> {
+    BUILTIN_DOCS.get(name)
+}
+
+/// Parameter information for a builtin function
+#[derive(Debug, Clone)]
+pub struct BuiltinParam {
+    /// Parameter name
+    pub name: &'static str,
+    /// Parameter type
+    pub ty: &'static str,
+}
 
 /// A builtin function
 pub struct Builtin {
@@ -37,6 +79,14 @@ pub struct Builtin {
     pub name: String,
     /// Number of expected arguments (None for variadic)
     pub arity: Option<usize>,
+    /// Parameter information
+    pub params: Vec<BuiltinParam>,
+    /// Return type
+    pub return_type: &'static str,
+    /// Required import module (None if no import needed)
+    pub required_import: Option<&'static str>,
+    /// Function color requirement
+    pub color: FunctionColor,
     /// The function implementation
     pub func: fn(&[Value], Span) -> NexusResult<Value>,
 }
@@ -51,18 +101,18 @@ pub struct BuiltinRegistry {
 
 /// Macro to register a builtin function with less boilerplate
 macro_rules! register_builtins {
-    ($registry:expr, $( ($name:expr, $arity:expr, $func:expr) ),* $(,)?) => {
+    ($registry:expr, $( ($name:expr, $params:expr, $ret:expr, $func:expr) ),* $(,)?) => {
         $(
-            $registry.register($name, $arity, $func);
+            $registry.register($name, $params, $ret, $func);
         )*
     };
 }
 
 /// Macro to register compat.io builtins
 macro_rules! register_compat_io_builtins {
-    ($registry:expr, $( ($name:expr, $arity:expr, $func:expr) ),* $(,)?) => {
+    ($registry:expr, $( ($name:expr, $params:expr, $ret:expr, $func:expr) ),* $(,)?) => {
         $(
-            $registry.register_compat_io($name, $arity, $func);
+            $registry.register_compat_io($name, $params, $ret, $func);
         )*
     };
 }
@@ -93,18 +143,52 @@ impl BuiltinRegistry {
         self.compat_io_builtins.contains_key(name)
     }
 
+    /// Get all builtin names (core builtins only)
+    pub fn builtin_names(&self) -> impl Iterator<Item = &str> {
+        self.builtins.keys().map(|s| s.as_str())
+    }
+
+    /// Get all compat.io builtin names
+    pub fn compat_io_names(&self) -> impl Iterator<Item = &str> {
+        self.compat_io_builtins.keys().map(|s| s.as_str())
+    }
+
+    /// Iterate over all core builtins
+    pub fn iter(&self) -> impl Iterator<Item = &Builtin> {
+        self.builtins.values()
+    }
+
+    /// Iterate over all compat.io builtins
+    pub fn iter_compat_io(&self) -> impl Iterator<Item = &Builtin> {
+        self.compat_io_builtins.values()
+    }
+
     /// Register a builtin function
     fn register(
         &mut self,
         name: &str,
-        arity: Option<usize>,
+        params: &[(&'static str, &'static str)],
+        return_type: &'static str,
         func: fn(&[Value], Span) -> NexusResult<Value>,
     ) {
+        let param_vec: Vec<BuiltinParam> = params
+            .iter()
+            .map(|(n, t)| BuiltinParam { name: n, ty: t })
+            .collect();
+        let arity = if params.iter().any(|(_, t)| t.starts_with("...")) {
+            None
+        } else {
+            Some(params.len())
+        };
         self.builtins.insert(
             name.to_string(),
             Builtin {
                 name: name.to_string(),
                 arity,
+                params: param_vec,
+                return_type,
+                required_import: None,
+                color: FunctionColor::Std,
                 func,
             },
         );
@@ -114,14 +198,28 @@ impl BuiltinRegistry {
     fn register_compat_io(
         &mut self,
         name: &str,
-        arity: Option<usize>,
+        params: &[(&'static str, &'static str)],
+        return_type: &'static str,
         func: fn(&[Value], Span) -> NexusResult<Value>,
     ) {
+        let param_vec: Vec<BuiltinParam> = params
+            .iter()
+            .map(|(n, t)| BuiltinParam { name: n, ty: t })
+            .collect();
+        let arity = if params.iter().any(|(_, t)| t.starts_with("...")) {
+            None
+        } else {
+            Some(params.len())
+        };
         self.compat_io_builtins.insert(
             name.to_string(),
             Builtin {
                 name: name.to_string(),
                 arity,
+                params: param_vec,
+                return_type,
+                required_import: Some("compat.io"),
+                color: FunctionColor::Compat,
                 func,
             },
         );
@@ -132,120 +230,392 @@ impl BuiltinRegistry {
         // Logical operations
         register_builtins!(
             self,
-            ("not", Some(1), logical::builtin_not),
-            ("and", Some(2), logical::builtin_and),
-            ("or", Some(2), logical::builtin_or),
+            ("not", &[("value", "bool")], "bool", logical::builtin_not),
+            (
+                "and",
+                &[("a", "bool"), ("b", "bool")],
+                "bool",
+                logical::builtin_and
+            ),
+            (
+                "or",
+                &[("a", "bool"), ("b", "bool")],
+                "bool",
+                logical::builtin_or
+            ),
         );
 
         // i64 operations
         register_builtins!(
             self,
-            ("addi64", Some(2), i64_ops::addi64),
-            ("subi64", Some(2), i64_ops::subi64),
-            ("muli64", Some(2), i64_ops::muli64),
-            ("divi64", Some(2), i64_ops::divi64),
-            ("modi64", Some(2), i64_ops::modi64),
-            ("negi64", Some(1), i64_ops::negi64),
-            ("eqi64", Some(2), i64_ops::eqi64),
-            ("nei64", Some(2), i64_ops::nei64),
-            ("lti64", Some(2), i64_ops::lti64),
-            ("lei64", Some(2), i64_ops::lei64),
-            ("gti64", Some(2), i64_ops::gti64),
-            ("gei64", Some(2), i64_ops::gei64),
+            (
+                "addi64",
+                &[("a", "i64"), ("b", "i64")],
+                "i64",
+                i64_ops::addi64
+            ),
+            (
+                "subi64",
+                &[("a", "i64"), ("b", "i64")],
+                "i64",
+                i64_ops::subi64
+            ),
+            (
+                "muli64",
+                &[("a", "i64"), ("b", "i64")],
+                "i64",
+                i64_ops::muli64
+            ),
+            (
+                "divi64",
+                &[("a", "i64"), ("b", "i64")],
+                "i64",
+                i64_ops::divi64
+            ),
+            (
+                "modi64",
+                &[("a", "i64"), ("b", "i64")],
+                "i64",
+                i64_ops::modi64
+            ),
+            ("negi64", &[("value", "i64")], "i64", i64_ops::negi64),
+            (
+                "eqi64",
+                &[("a", "i64"), ("b", "i64")],
+                "bool",
+                i64_ops::eqi64
+            ),
+            (
+                "nei64",
+                &[("a", "i64"), ("b", "i64")],
+                "bool",
+                i64_ops::nei64
+            ),
+            (
+                "lti64",
+                &[("a", "i64"), ("b", "i64")],
+                "bool",
+                i64_ops::lti64
+            ),
+            (
+                "lei64",
+                &[("a", "i64"), ("b", "i64")],
+                "bool",
+                i64_ops::lei64
+            ),
+            (
+                "gti64",
+                &[("a", "i64"), ("b", "i64")],
+                "bool",
+                i64_ops::gti64
+            ),
+            (
+                "gei64",
+                &[("a", "i64"), ("b", "i64")],
+                "bool",
+                i64_ops::gei64
+            ),
         );
 
         // i32 operations
         register_builtins!(
             self,
-            ("addi32", Some(2), i32_ops::addi32),
-            ("subi32", Some(2), i32_ops::subi32),
-            ("muli32", Some(2), i32_ops::muli32),
-            ("divi32", Some(2), i32_ops::divi32),
-            ("modi32", Some(2), i32_ops::modi32),
-            ("negi32", Some(1), i32_ops::negi32),
-            ("eqi32", Some(2), i32_ops::eqi32),
-            ("nei32", Some(2), i32_ops::nei32),
-            ("lti32", Some(2), i32_ops::lti32),
-            ("lei32", Some(2), i32_ops::lei32),
-            ("gti32", Some(2), i32_ops::gti32),
-            ("gei32", Some(2), i32_ops::gei32),
+            (
+                "addi32",
+                &[("a", "i32"), ("b", "i32")],
+                "i32",
+                i32_ops::addi32
+            ),
+            (
+                "subi32",
+                &[("a", "i32"), ("b", "i32")],
+                "i32",
+                i32_ops::subi32
+            ),
+            (
+                "muli32",
+                &[("a", "i32"), ("b", "i32")],
+                "i32",
+                i32_ops::muli32
+            ),
+            (
+                "divi32",
+                &[("a", "i32"), ("b", "i32")],
+                "i32",
+                i32_ops::divi32
+            ),
+            (
+                "modi32",
+                &[("a", "i32"), ("b", "i32")],
+                "i32",
+                i32_ops::modi32
+            ),
+            ("negi32", &[("value", "i32")], "i32", i32_ops::negi32),
+            (
+                "eqi32",
+                &[("a", "i32"), ("b", "i32")],
+                "bool",
+                i32_ops::eqi32
+            ),
+            (
+                "nei32",
+                &[("a", "i32"), ("b", "i32")],
+                "bool",
+                i32_ops::nei32
+            ),
+            (
+                "lti32",
+                &[("a", "i32"), ("b", "i32")],
+                "bool",
+                i32_ops::lti32
+            ),
+            (
+                "lei32",
+                &[("a", "i32"), ("b", "i32")],
+                "bool",
+                i32_ops::lei32
+            ),
+            (
+                "gti32",
+                &[("a", "i32"), ("b", "i32")],
+                "bool",
+                i32_ops::gti32
+            ),
+            (
+                "gei32",
+                &[("a", "i32"), ("b", "i32")],
+                "bool",
+                i32_ops::gei32
+            ),
         );
 
         // f64 operations
         register_builtins!(
             self,
-            ("addf64", Some(2), f64_ops::addf64),
-            ("subf64", Some(2), f64_ops::subf64),
-            ("mulf64", Some(2), f64_ops::mulf64),
-            ("divf64", Some(2), f64_ops::divf64),
-            ("negf64", Some(1), f64_ops::negf64),
-            ("eqf64", Some(2), f64_ops::eqf64),
-            ("nef64", Some(2), f64_ops::nef64),
-            ("ltf64", Some(2), f64_ops::ltf64),
-            ("lef64", Some(2), f64_ops::lef64),
-            ("gtf64", Some(2), f64_ops::gtf64),
-            ("gef64", Some(2), f64_ops::gef64),
+            (
+                "addf64",
+                &[("a", "f64"), ("b", "f64")],
+                "f64",
+                f64_ops::addf64
+            ),
+            (
+                "subf64",
+                &[("a", "f64"), ("b", "f64")],
+                "f64",
+                f64_ops::subf64
+            ),
+            (
+                "mulf64",
+                &[("a", "f64"), ("b", "f64")],
+                "f64",
+                f64_ops::mulf64
+            ),
+            (
+                "divf64",
+                &[("a", "f64"), ("b", "f64")],
+                "f64",
+                f64_ops::divf64
+            ),
+            ("negf64", &[("value", "f64")], "f64", f64_ops::negf64),
+            (
+                "eqf64",
+                &[("a", "f64"), ("b", "f64")],
+                "bool",
+                f64_ops::eqf64
+            ),
+            (
+                "nef64",
+                &[("a", "f64"), ("b", "f64")],
+                "bool",
+                f64_ops::nef64
+            ),
+            (
+                "ltf64",
+                &[("a", "f64"), ("b", "f64")],
+                "bool",
+                f64_ops::ltf64
+            ),
+            (
+                "lef64",
+                &[("a", "f64"), ("b", "f64")],
+                "bool",
+                f64_ops::lef64
+            ),
+            (
+                "gtf64",
+                &[("a", "f64"), ("b", "f64")],
+                "bool",
+                f64_ops::gtf64
+            ),
+            (
+                "gef64",
+                &[("a", "f64"), ("b", "f64")],
+                "bool",
+                f64_ops::gef64
+            ),
         );
 
         // f32 operations
         register_builtins!(
             self,
-            ("addf32", Some(2), f32_ops::addf32),
-            ("subf32", Some(2), f32_ops::subf32),
-            ("mulf32", Some(2), f32_ops::mulf32),
-            ("divf32", Some(2), f32_ops::divf32),
-            ("negf32", Some(1), f32_ops::negf32),
+            (
+                "addf32",
+                &[("a", "f32"), ("b", "f32")],
+                "f32",
+                f32_ops::addf32
+            ),
+            (
+                "subf32",
+                &[("a", "f32"), ("b", "f32")],
+                "f32",
+                f32_ops::subf32
+            ),
+            (
+                "mulf32",
+                &[("a", "f32"), ("b", "f32")],
+                "f32",
+                f32_ops::mulf32
+            ),
+            (
+                "divf32",
+                &[("a", "f32"), ("b", "f32")],
+                "f32",
+                f32_ops::divf32
+            ),
+            ("negf32", &[("value", "f32")], "f32", f32_ops::negf32),
+        );
+
+        // Rune operations
+        register_builtins!(
+            self,
+            (
+                "eqr",
+                &[("a", "rune"), ("b", "rune")],
+                "bool",
+                rune_ops::eqr
+            ),
+            (
+                "ner",
+                &[("a", "rune"), ("b", "rune")],
+                "bool",
+                rune_ops::ner
+            ),
+            (
+                "ltr",
+                &[("a", "rune"), ("b", "rune")],
+                "bool",
+                rune_ops::ltr
+            ),
+            (
+                "ler",
+                &[("a", "rune"), ("b", "rune")],
+                "bool",
+                rune_ops::ler
+            ),
+            (
+                "gtr",
+                &[("a", "rune"), ("b", "rune")],
+                "bool",
+                rune_ops::gtr
+            ),
+            (
+                "ger",
+                &[("a", "rune"), ("b", "rune")],
+                "bool",
+                rune_ops::ger
+            ),
         );
 
         // Type conversions
         register_builtins!(
             self,
-            ("i64", Some(1), conversions::to_i64),
-            ("i32", Some(1), conversions::to_i32),
-            ("f64", Some(1), conversions::to_f64),
-            ("f32", Some(1), conversions::to_f32),
-            ("bool", Some(1), conversions::to_bool),
-            ("rune", Some(1), conversions::to_rune),
+            ("i64", &[("value", "any")], "i64", conversions::to_i64),
+            ("i32", &[("value", "any")], "i32", conversions::to_i32),
+            ("f64", &[("value", "any")], "f64", conversions::to_f64),
+            ("f32", &[("value", "any")], "f32", conversions::to_f32),
+            ("bool", &[("value", "any")], "bool", conversions::to_bool),
+            ("rune", &[("value", "any")], "rune", conversions::to_rune),
         );
 
         // Collection operations
         register_builtins!(
             self,
-            ("len", Some(1), collections::len),
-            ("push", Some(2), collections::push),
-            ("pop", Some(1), collections::pop),
-            ("concat", Some(2), collections::concat),
-            ("slice", Some(3), collections::slice),
-            ("contains", Some(2), collections::contains),
+            ("len", &[("collection", "any")], "i64", collections::len),
+            (
+                "push",
+                &[("array", "[]any"), ("value", "any")],
+                "void",
+                collections::push
+            ),
+            ("pop", &[("array", "[]any")], "any", collections::pop),
+            (
+                "concat",
+                &[("a", "any"), ("b", "any")],
+                "any",
+                collections::concat
+            ),
+            (
+                "slice",
+                &[("collection", "any"), ("start", "i64"), ("end", "i64")],
+                "any",
+                collections::slice
+            ),
+            (
+                "contains",
+                &[("collection", "any"), ("value", "any")],
+                "bool",
+                collections::contains
+            ),
         );
 
         // Utility functions
         register_builtins!(
             self,
-            ("typeof", Some(1), utility::type_of),
-            ("is_none", Some(1), utility::is_none),
-            ("unwrap", Some(1), utility::unwrap),
-            ("panic", Some(1), utility::panic),
-            ("assert", Some(1), utility::assert),
-            ("assert_eq", Some(2), utility::assert_eq),
+            ("typeof", &[("value", "any")], "string", utility::type_of),
+            ("str", &[("value", "any")], "string", utility::str),
+            ("is_none", &[("value", "any")], "bool", utility::is_none),
+            ("unwrap", &[("value", "any")], "any", utility::unwrap),
+            ("panic", &[("message", "string")], "void", utility::panic),
+            ("assert", &[("condition", "bool")], "void", utility::assert),
+            (
+                "assert_eq",
+                &[("a", "any"), ("b", "any")],
+                "void",
+                utility::assert_eq
+            ),
         );
 
         // Bitwise operations
         register_builtins!(
             self,
-            ("band", Some(2), bitwise::band),
-            ("bor", Some(2), bitwise::bor),
-            ("bxor", Some(2), bitwise::bxor),
-            ("bnot", Some(1), bitwise::bnot),
-            ("shl", Some(2), bitwise::shl),
-            ("shr", Some(2), bitwise::shr),
+            ("band", &[("a", "i64"), ("b", "i64")], "i64", bitwise::band),
+            ("bor", &[("a", "i64"), ("b", "i64")], "i64", bitwise::bor),
+            ("bxor", &[("a", "i64"), ("b", "i64")], "i64", bitwise::bxor),
+            ("bnot", &[("value", "i64")], "i64", bitwise::bnot),
+            (
+                "shl",
+                &[("value", "i64"), ("amount", "i64")],
+                "i64",
+                bitwise::shl
+            ),
+            (
+                "shr",
+                &[("value", "i64"), ("amount", "i64")],
+                "i64",
+                bitwise::shr
+            ),
         );
 
         // compat.io module (requires import)
         register_compat_io_builtins!(
             self,
-            ("print", None, compat_io::print),
-            ("println", None, compat_io::println),
+            ("print", &[("values", "...any")], "void", compat_io::print),
+            (
+                "println",
+                &[("values", "...any")],
+                "void",
+                compat_io::println
+            ),
         );
     }
 }

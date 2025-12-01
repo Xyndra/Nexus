@@ -43,6 +43,14 @@ impl Program {
             _ => None,
         })
     }
+
+    /// Get all macro definitions
+    pub fn macros(&self) -> impl Iterator<Item = &MacroDef> {
+        self.items.iter().filter_map(|item| match item {
+            Item::Macro(m) => Some(m),
+            _ => None,
+        })
+    }
 }
 
 /// Top-level items in a program

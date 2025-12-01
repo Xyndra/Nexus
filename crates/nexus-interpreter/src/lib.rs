@@ -3,7 +3,7 @@
 //! This crate provides the runtime interpreter that executes Nexus AST.
 //! Note: All operations are function calls - there are no binary or unary operators.
 
-mod builtins;
+pub mod builtins;
 mod scope;
 mod value;
 
@@ -70,6 +70,8 @@ pub struct Interpreter {
     known_modules: HashSet<String>,
     /// Functions defined in each module (module_name -> function_names)
     module_functions: HashMap<String, HashSet<String>>,
+    /// Macros defined in each module (module_name -> macro_names)
+    module_macros: HashMap<String, HashSet<String>>,
     /// Current recursion depth
     recursion_depth: usize,
     /// Step counter for sandboxing
@@ -107,6 +109,7 @@ impl Interpreter {
             imported_modules: HashSet::new(),
             known_modules: HashSet::new(),
             module_functions: HashMap::new(),
+            module_macros: HashMap::new(),
             recursion_depth: 0,
             step_count: 0,
             current_color: FunctionColor::Std,
@@ -147,8 +150,9 @@ impl Interpreter {
                     self.register_interface(interface_def)?;
                 }
                 Item::Macro(macro_def) => {
-                    self.macros
-                        .insert(macro_def.name.clone(), macro_def.clone());
+                    // Store macro with module-qualified name
+                    let qualified_name = format!("{}.{}", self.current_module, macro_def.name);
+                    self.macros.insert(qualified_name, macro_def.clone());
                 }
             }
         }
@@ -312,16 +316,24 @@ impl Interpreter {
             // Module-level import: register the module for qualified access
             self.imported_modules.insert(module_path.to_string());
         } else {
-            // Get the functions available in this module
+            // Get the functions and macros available in this module
             let available_functions = self
                 .module_functions
+                .get(module_path)
+                .cloned()
+                .unwrap_or_default();
+            let available_macros = self
+                .module_macros
                 .get(module_path)
                 .cloned()
                 .unwrap_or_default();
 
             // Register the imported symbols
             for symbol in &use_stmt.symbols {
-                if !available_functions.contains(symbol) {
+                // Check if it's a macro (no $ prefix needed - macros are just named like functions)
+                let is_macro = available_macros.contains(symbol);
+
+                if !is_macro && !available_functions.contains(symbol) {
                     return Err(NexusError::RuntimeError {
                         message: format!(
                             "Symbol '{}' not found in module '{}'",
@@ -1115,18 +1127,32 @@ impl Interpreter {
         call: &MacroCallExpr,
         scope: &mut Scope,
     ) -> NexusResult<Value> {
-        // Check for builtin macros first
-        if call.name == "format" {
-            return self.builtin_format(&call.args, scope, call.span);
+        // Determine the qualified macro name to look up
+        // First check if this is an imported symbol (no $ prefix in import)
+        let qualified_name = if let Some(source_module) = self.imported_symbols.get(&call.name) {
+            format!("{}.{}", source_module, call.name)
+        } else {
+            // Try current module
+            format!("{}.{}", self.current_module, call.name)
+        };
+
+        // Look up the macro with qualified name
+        if let Some(macro_def) = self.macros.get(&qualified_name).cloned() {
+            return self.expand_and_evaluate_macro(&macro_def, &call.args, scope, call.span);
         }
 
-        // User-defined macros
-        if let Some(_macro_def) = self.macros.get(&call.name).cloned() {
-            // TODO: Implement user-defined macro expansion
-            return Err(NexusError::RuntimeError {
-                message: "User-defined macros not yet implemented".to_string(),
-                span: Some(call.span),
-            });
+        // If not found with qualified name, check if it requires an import
+        // by looking in module_macros to give a helpful error
+        for (module, macros) in &self.module_macros {
+            if macros.contains(&call.name) {
+                return Err(NexusError::RuntimeError {
+                    message: format!(
+                        "'${}' requires import: use {{ {} }} from {}",
+                        call.name, call.name, module
+                    ),
+                    span: Some(call.span),
+                });
+            }
         }
 
         Err(NexusError::UndefinedFunction {
@@ -1135,65 +1161,51 @@ impl Interpreter {
         })
     }
 
-    /// Builtin format macro
-    fn builtin_format(
+    /// Expand a user-defined macro and evaluate the result
+    fn expand_and_evaluate_macro(
         &mut self,
+        macro_def: &nexus_parser::MacroDef,
         args: &[Expression],
         scope: &mut Scope,
         span: Span,
     ) -> NexusResult<Value> {
-        if args.is_empty() {
-            return Err(NexusError::RuntimeError {
-                message: "$format requires at least one argument".to_string(),
-                span: Some(span),
-            });
+        // Create macro scope with parameters
+        let mut macro_scope = Scope::new();
+
+        // Bind macro arguments to parameters
+        for (param, arg) in macro_def.params.iter().zip(args.iter()) {
+            let value = self.evaluate_expression(arg, scope)?;
+            macro_scope.define(Variable {
+                name: param.name.clone(),
+                value,
+                modifiers: VarModifiers::default(),
+                span: param.span,
+            })?;
         }
 
-        let format_str = self.evaluate_expression(&args[0], scope)?;
-        let format_str = match format_str {
+        // Execute macro body to get the code string
+        let macro_result = self.execute_block(&macro_def.body, &mut macro_scope)?;
+
+        // The macro must return a string
+        let code_string = match macro_result {
             Value::String(s) => s.into_iter().collect::<String>(),
             _ => {
                 return Err(NexusError::TypeError {
-                    message: "First argument to $format must be a string".to_string(),
-                    span,
+                    message: "Macro must return a string (macro type)".to_string(),
+                    span: macro_def.span,
                 });
             }
         };
 
-        // Evaluate remaining arguments
-        let mut values = Vec::new();
-        for arg in args.iter().skip(1) {
-            values.push(self.evaluate_expression(arg, scope)?);
-        }
+        // Parse the generated code as an expression
+        let parsed_expr =
+            nexus_parser::parse_expression(&code_string).map_err(|e| NexusError::RuntimeError {
+                message: format!("Failed to parse macro expansion: {}", e),
+                span: Some(span),
+            })?;
 
-        // Simple interpolation: ${N} where N is 1-based index
-        let mut result = String::new();
-        let mut chars = format_str.chars().peekable();
-
-        while let Some(c) = chars.next() {
-            if c == '$' && chars.peek() == Some(&'{') {
-                chars.next(); // consume '{'
-                let mut num_str = String::new();
-                while let Some(&d) = chars.peek() {
-                    if d == '}' {
-                        chars.next();
-                        break;
-                    }
-                    num_str.push(d);
-                    chars.next();
-                }
-                if let Ok(idx) = num_str.parse::<usize>()
-                    && idx > 0
-                    && idx <= values.len()
-                {
-                    result.push_str(&values[idx - 1].to_display_string());
-                }
-            } else {
-                result.push(c);
-            }
-        }
-
-        Ok(Value::String(result.chars().collect()))
+        // Evaluate the parsed expression in the original scope
+        self.evaluate_expression(&parsed_expr, scope)
     }
 
     /// Evaluate field access
@@ -1403,6 +1415,14 @@ impl Interpreter {
             .entry(module_name.to_string())
             .or_default()
             .insert(function_name.to_string());
+    }
+
+    /// Register a macro as belonging to a module (for import checking)
+    pub fn register_module_macro(&mut self, module_name: &str, macro_name: &str) {
+        self.module_macros
+            .entry(module_name.to_string())
+            .or_default()
+            .insert(macro_name.to_string());
     }
 
     /// Reset step counter (for sandboxing)

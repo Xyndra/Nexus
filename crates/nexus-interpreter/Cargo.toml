@@ -3,6 +3,10 @@ name = "nexus-interpreter"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+builtin-docs = ["serde", "json5"]
+
 [dependencies]
 nexus-core = { workspace = true }
 nexus-lexer = { workspace = true }
@@ -10,3 +14,5 @@ nexus-parser = { workspace = true }
 nexus-types = { workspace = true }
 nexus-permissions = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+json5 = { workspace = true, optional = true }

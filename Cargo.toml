@@ -37,3 +37,5 @@ nexus-sandbox = { path = "crates/nexus-sandbox" }
 nexus-project = { path = "crates/nexus-project" }
 
 thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+json5 = "0.4"

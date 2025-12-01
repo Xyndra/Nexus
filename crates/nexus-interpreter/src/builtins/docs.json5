@@ -1,0 +1,327 @@
+{
+    // Logical operations
+    "not": {
+        "description": "Logical NOT",
+        "documentation": "Returns the logical negation of the input."
+    },
+    "and": {
+        "description": "Logical AND",
+        "documentation": "Returns true if both arguments are true."
+    },
+    "or": {
+        "description": "Logical OR",
+        "documentation": "Returns true if either argument is true."
+    },
+
+    // i64 operations
+    "addi64": {
+        "description": "Add two i64 values",
+        "documentation": "Returns the sum of two 64-bit integers."
+    },
+    "subi64": {
+        "description": "Subtract two i64 values",
+        "documentation": "Returns the first argument minus the second."
+    },
+    "muli64": {
+        "description": "Multiply two i64 values",
+        "documentation": "Returns the product of two 64-bit integers."
+    },
+    "divi64": {
+        "description": "Divide two i64 values",
+        "documentation": "Returns the integer division of the first by the second."
+    },
+    "modi64": {
+        "description": "Modulo of two i64 values",
+        "documentation": "Returns the remainder of integer division."
+    },
+    "negi64": {
+        "description": "Negate an i64 value",
+        "documentation": "Returns the negation of a 64-bit integer."
+    },
+    "eqi64": {
+        "description": "Check i64 equality",
+        "documentation": "Returns true if the two 64-bit integers are equal."
+    },
+    "nei64": {
+        "description": "Check i64 inequality",
+        "documentation": "Returns true if the two 64-bit integers are not equal."
+    },
+    "lti64": {
+        "description": "Check i64 less than",
+        "documentation": "Returns true if the first argument is less than the second."
+    },
+    "lei64": {
+        "description": "Check i64 less than or equal",
+        "documentation": "Returns true if the first argument is less than or equal to the second."
+    },
+    "gti64": {
+        "description": "Check i64 greater than",
+        "documentation": "Returns true if the first argument is greater than the second."
+    },
+    "gei64": {
+        "description": "Check i64 greater than or equal",
+        "documentation": "Returns true if the first argument is greater than or equal to the second."
+    },
+
+    // i32 operations
+    "addi32": {
+        "description": "Add two i32 values",
+        "documentation": "Returns the sum of two 32-bit integers."
+    },
+    "subi32": {
+        "description": "Subtract two i32 values",
+        "documentation": "Returns the first argument minus the second."
+    },
+    "muli32": {
+        "description": "Multiply two i32 values",
+        "documentation": "Returns the product of two 32-bit integers."
+    },
+    "divi32": {
+        "description": "Divide two i32 values",
+        "documentation": "Returns the integer division of the first by the second."
+    },
+    "modi32": {
+        "description": "Modulo of two i32 values",
+        "documentation": "Returns the remainder of integer division."
+    },
+    "negi32": {
+        "description": "Negate an i32 value",
+        "documentation": "Returns the negation of a 32-bit integer."
+    },
+    "eqi32": {
+        "description": "Check i32 equality",
+        "documentation": "Returns true if the two 32-bit integers are equal."
+    },
+    "nei32": {
+        "description": "Check i32 inequality",
+        "documentation": "Returns true if the two 32-bit integers are not equal."
+    },
+    "lti32": {
+        "description": "Check i32 less than",
+        "documentation": "Returns true if the first argument is less than the second."
+    },
+    "lei32": {
+        "description": "Check i32 less than or equal",
+        "documentation": "Returns true if the first argument is less than or equal to the second."
+    },
+    "gti32": {
+        "description": "Check i32 greater than",
+        "documentation": "Returns true if the first argument is greater than the second."
+    },
+    "gei32": {
+        "description": "Check i32 greater than or equal",
+        "documentation": "Returns true if the first argument is greater than or equal to the second."
+    },
+
+    // f64 operations
+    "addf64": {
+        "description": "Add two f64 values",
+        "documentation": "Returns the sum of two 64-bit floats."
+    },
+    "subf64": {
+        "description": "Subtract two f64 values",
+        "documentation": "Returns the first argument minus the second."
+    },
+    "mulf64": {
+        "description": "Multiply two f64 values",
+        "documentation": "Returns the product of two 64-bit floats."
+    },
+    "divf64": {
+        "description": "Divide two f64 values",
+        "documentation": "Returns the division of the first by the second."
+    },
+    "negf64": {
+        "description": "Negate an f64 value",
+        "documentation": "Returns the negation of a 64-bit float."
+    },
+    "eqf64": {
+        "description": "Check f64 equality",
+        "documentation": "Returns true if the two 64-bit floats are equal."
+    },
+    "nef64": {
+        "description": "Check f64 inequality",
+        "documentation": "Returns true if the two 64-bit floats are not equal."
+    },
+    "ltf64": {
+        "description": "Check f64 less than",
+        "documentation": "Returns true if the first argument is less than the second."
+    },
+    "lef64": {
+        "description": "Check f64 less than or equal",
+        "documentation": "Returns true if the first argument is less than or equal to the second."
+    },
+    "gtf64": {
+        "description": "Check f64 greater than",
+        "documentation": "Returns true if the first argument is greater than the second."
+    },
+    "gef64": {
+        "description": "Check f64 greater than or equal",
+        "documentation": "Returns true if the first argument is greater than or equal to the second."
+    },
+
+    // f32 operations
+    "addf32": {
+        "description": "Add two f32 values",
+        "documentation": "Returns the sum of two 32-bit floats."
+    },
+    "subf32": {
+        "description": "Subtract two f32 values",
+        "documentation": "Returns the first argument minus the second."
+    },
+    "mulf32": {
+        "description": "Multiply two f32 values",
+        "documentation": "Returns the product of two 32-bit floats."
+    },
+    "divf32": {
+        "description": "Divide two f32 values",
+        "documentation": "Returns the division of the first by the second."
+    },
+    "negf32": {
+        "description": "Negate an f32 value",
+        "documentation": "Returns the negation of a 32-bit float."
+    },
+
+    // Rune operations
+    "eqr": {
+        "description": "Check rune equality",
+        "documentation": "Returns true if the two runes are equal."
+    },
+    "ner": {
+        "description": "Check rune inequality",
+        "documentation": "Returns true if the two runes are not equal."
+    },
+    "ltr": {
+        "description": "Check rune less than",
+        "documentation": "Returns true if the first rune is less than the second (by Unicode codepoint)."
+    },
+    "ler": {
+        "description": "Check rune less than or equal",
+        "documentation": "Returns true if the first rune is less than or equal to the second."
+    },
+    "gtr": {
+        "description": "Check rune greater than",
+        "documentation": "Returns true if the first rune is greater than the second."
+    },
+    "ger": {
+        "description": "Check rune greater than or equal",
+        "documentation": "Returns true if the first rune is greater than or equal to the second."
+    },
+
+    // Type conversions
+    "i64": {
+        "description": "Convert to i64",
+        "documentation": "Converts a value to a 64-bit integer. Works with numeric types and strings."
+    },
+    "i32": {
+        "description": "Convert to i32",
+        "documentation": "Converts a value to a 32-bit integer. Works with numeric types and strings."
+    },
+    "f64": {
+        "description": "Convert to f64",
+        "documentation": "Converts a value to a 64-bit float. Works with numeric types and strings."
+    },
+    "f32": {
+        "description": "Convert to f32",
+        "documentation": "Converts a value to a 32-bit float. Works with numeric types and strings."
+    },
+    "bool": {
+        "description": "Convert to bool",
+        "documentation": "Converts a value to a boolean. Zero/empty values become false, others become true."
+    },
+    "rune": {
+        "description": "Convert to rune",
+        "documentation": "Converts a value to a rune (Unicode codepoint)."
+    },
+
+    // Collection operations
+    "len": {
+        "description": "Get length",
+        "documentation": "Returns the length of an array, string, or bytes."
+    },
+    "push": {
+        "description": "Push to array",
+        "documentation": "Appends a value to the end of an array. Mutates the array in place."
+    },
+    "pop": {
+        "description": "Pop from array",
+        "documentation": "Removes and returns the last element of an array."
+    },
+    "concat": {
+        "description": "Concatenate",
+        "documentation": "Concatenates two arrays or strings."
+    },
+    "slice": {
+        "description": "Slice collection",
+        "documentation": "Returns a slice of an array or string from start (inclusive) to end (exclusive)."
+    },
+    "contains": {
+        "description": "Check containment",
+        "documentation": "Returns true if the collection contains the value."
+    },
+
+    // Utility functions
+    "typeof": {
+        "description": "Get type name",
+        "documentation": "Returns the type name of a value as a string."
+    },
+    "str": {
+        "description": "Convert to string",
+        "documentation": "Converts any value to its string representation."
+    },
+    "is_none": {
+        "description": "Check if none",
+        "documentation": "Returns true if the value is none/null."
+    },
+    "unwrap": {
+        "description": "Unwrap optional",
+        "documentation": "Unwraps an optional value, panicking if it is none."
+    },
+    "panic": {
+        "description": "Panic with message",
+        "documentation": "Terminates execution with an error message."
+    },
+    "assert": {
+        "description": "Assert condition",
+        "documentation": "Panics if the condition is false."
+    },
+    "assert_eq": {
+        "description": "Assert equality",
+        "documentation": "Panics if the two values are not equal."
+    },
+
+    // Bitwise operations
+    "band": {
+        "description": "Bitwise AND",
+        "documentation": "Returns the bitwise AND of two integers."
+    },
+    "bor": {
+        "description": "Bitwise OR",
+        "documentation": "Returns the bitwise OR of two integers."
+    },
+    "bxor": {
+        "description": "Bitwise XOR",
+        "documentation": "Returns the bitwise XOR of two integers."
+    },
+    "bnot": {
+        "description": "Bitwise NOT",
+        "documentation": "Returns the bitwise NOT (complement) of an integer."
+    },
+    "shl": {
+        "description": "Shift left",
+        "documentation": "Shifts the bits left by the specified amount."
+    },
+    "shr": {
+        "description": "Shift right",
+        "documentation": "Shifts the bits right by the specified amount."
+    },
+
+    // compat.io module
+    "print": {
+        "description": "Print without newline",
+        "documentation": "Prints values to stdout without a trailing newline."
+    },
+    "println": {
+        "description": "Print with newline",
+        "documentation": "Prints values to stdout with a trailing newline."
+    }
+}

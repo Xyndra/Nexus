@@ -1,0 +1,33 @@
+use { println } from compat.io
+use { format } from std.util.strings
+
+compat main(): void {
+    c name = "Alice"
+    c age = 30
+    c score = 95.5
+
+    // Named variable interpolation using stdlib $format macro
+    c greeting = $format("Name: ${name} Age: ${age}")
+    println(greeting)
+
+    // Multiple variables in one string
+    c summary = $format("${name} is ${age} years old and scored ${score}")
+    println(summary)
+
+    // Mixed types with named variables
+    c flag = true
+    c items = [1, 2, 3]
+    c mixed = $format("Flag: ${flag}, Items: ${items}")
+    println(mixed)
+
+    // Using variables in expressions before formatting
+    c x = 10
+    c y = 20
+    c sum = addi64(x, y)
+    c math_result = $format("${x} + ${y} = ${sum}")
+    println(math_result)
+}
+
+std abc(): void {
+    println("Hello, World!")
+}

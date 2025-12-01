@@ -3,15 +3,174 @@
 //! This module provides diagnostic checking for Nexus source code,
 //! including syntax errors and semantic analysis.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use nexus_core::Diagnostics;
+use nexus_core::{Diagnostics, FunctionColor};
 use nexus_parser::{
     Block, CallExpr, ElseClause, Expression, GotoStmt, Item, LiteralKind, Program, Statement,
     SubscopeStmt, parse,
 };
 
-use crate::builtins::BUILTINS;
+use crate::builtins;
+
+/// Context for macro checking - contains all available macros from all documents
+#[derive(Debug, Clone)]
+pub struct MacroContext {
+    /// Map of macro name -> list of module paths where this macro is defined
+    pub macros: HashMap<String, Vec<String>>,
+}
+
+impl MacroContext {
+    /// Create a new empty context
+    pub fn new() -> Self {
+        Self {
+            macros: HashMap::new(),
+        }
+    }
+
+    /// Build a context from multiple programs with their module names
+    pub fn from_documents(documents: &HashMap<String, (String, Option<Program>)>) -> Self {
+        let mut ctx = Self::new();
+
+        for (uri, (_content, ast)) in documents {
+            if let Some(program) = ast {
+                // Try to extract module name from URI
+                let module_name = Self::module_name_from_uri(uri);
+
+                for item in &program.items {
+                    if let Item::Macro(macro_def) = item {
+                        ctx.macros
+                            .entry(macro_def.name.clone())
+                            .or_default()
+                            .push(module_name.clone());
+                    }
+                }
+            }
+        }
+
+        ctx
+    }
+
+    /// Extract a module name from a document URI
+    fn module_name_from_uri(uri: &str) -> String {
+        // Try to extract meaningful module name from path
+        // e.g., "file:///path/to/std/util/strings/lib.nx" -> "std.util.strings"
+        let path = uri
+            .strip_prefix("file:///")
+            .or_else(|| uri.strip_prefix("file://"))
+            .unwrap_or(uri);
+
+        // Look for stdlib pattern
+        if let Some(idx) = path.find("stdlib") {
+            let after_stdlib = &path[idx + 7..]; // Skip "stdlib/"
+            let parts: Vec<&str> = after_stdlib
+                .trim_start_matches(['/', '\\'])
+                .split(['/', '\\'])
+                .filter(|p| !p.is_empty() && *p != "lib.nx" && !p.ends_with(".nx"))
+                .collect();
+            if !parts.is_empty() {
+                return parts.join(".");
+            }
+        }
+
+        // Fallback: use filename without extension
+        path.rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("unknown")
+            .trim_end_matches(".nx")
+            .to_string()
+    }
+
+    /// Get module paths where a macro is defined
+    pub fn get_macro_modules(&self, name: &str) -> Option<&Vec<String>> {
+        self.macros.get(name)
+    }
+}
+
+impl Default for MacroContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Information about a function in the context
+#[derive(Debug, Clone)]
+pub struct FunctionEntry {
+    /// The module path where this function is defined
+    pub module: String,
+    /// The function color (std, compat, plat)
+    pub color: FunctionColor,
+}
+
+/// Context for function checking - contains all available functions from all documents
+#[derive(Debug, Clone)]
+pub struct FunctionContext {
+    /// Map of function name -> list of FunctionEntry where this function is defined
+    pub functions: HashMap<String, Vec<FunctionEntry>>,
+}
+
+impl FunctionContext {
+    /// Create a new empty context
+    pub fn new() -> Self {
+        Self {
+            functions: HashMap::new(),
+        }
+    }
+
+    /// Build a context from multiple programs with their module names
+    pub fn from_documents(documents: &HashMap<String, (String, Option<Program>)>) -> Self {
+        let mut ctx = Self::new();
+
+        for (uri, (_content, ast)) in documents {
+            if let Some(program) = ast {
+                // Try to extract module name from URI
+                let module_name = MacroContext::module_name_from_uri(uri);
+
+                for item in &program.items {
+                    if let Item::Function(func) = item {
+                        ctx.functions
+                            .entry(func.name.clone())
+                            .or_default()
+                            .push(FunctionEntry {
+                                module: module_name.clone(),
+                                color: func.color,
+                            });
+                    }
+                }
+            }
+        }
+
+        ctx
+    }
+
+    /// Get entries where a function is defined
+    pub fn get_function_entries(&self, name: &str) -> Option<&Vec<FunctionEntry>> {
+        self.functions.get(name)
+    }
+
+    /// Get function entries that are callable from a given color context
+    pub fn get_callable_functions(
+        &self,
+        name: &str,
+        caller_color: FunctionColor,
+    ) -> Vec<&FunctionEntry> {
+        self.functions
+            .get(name)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| caller_color.can_call(entry.color))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+impl Default for FunctionContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Configuration for diagnostic checks.
 #[derive(Debug, Clone)]
@@ -134,8 +293,8 @@ fn infer_expression_type(
             if let Some(_info) = function_info.get(&call.function) {
                 // Would need return type tracking
                 InferredType::Unknown
-            } else if let Some(builtin) = BUILTINS.get(call.function.as_str()) {
-                InferredType::from_type_name(builtin.return_type)
+            } else if let Some(builtin_info) = builtins::get_any_builtin(&call.function) {
+                InferredType::from_type_name(builtin_info.builtin.return_type)
             } else {
                 InferredType::Unknown
             }
@@ -151,11 +310,13 @@ fn infer_expression_type(
     }
 }
 
-/// Compute diagnostics for a document.
-pub fn compute_diagnostics(
+/// Compute diagnostics for a document with optional cross-file macro and function context.
+pub fn compute_diagnostics_with_context(
     content: &str,
     ast: &Option<Program>,
     config: &DiagnosticsConfig,
+    macro_context: Option<&MacroContext>,
+    function_context: Option<&FunctionContext>,
 ) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
 
@@ -178,6 +339,14 @@ pub fn compute_diagnostics(
         // Build function info map for argument checking
         let function_info = build_function_info_map(program);
 
+        // Collect imported macros and locally defined macros for macro import checking
+        let imported_macros = collect_imported_macros(program);
+        let local_macros = collect_local_macros(program);
+
+        // Collect imported functions and locally defined functions for function import checking
+        let imported_functions = collect_imported_functions(program);
+        let local_functions = collect_local_functions(program);
+
         // Check each item
         for item in &program.items {
             match item {
@@ -192,6 +361,27 @@ pub fn compute_diagnostics(
                     check_function_calls_in_block(&func.body, &function_info, &mut diagnostics);
                     // Check for extra content after goto statements
                     check_goto_followed_by_expression(&func.body, &mut diagnostics);
+                    // Check for missing macro imports (only if we have macro context)
+                    if let Some(ctx) = macro_context {
+                        check_macro_imports_in_block(
+                            &func.body,
+                            &imported_macros,
+                            &local_macros,
+                            ctx,
+                            &mut diagnostics,
+                        );
+                    }
+                    // Check for missing function imports
+                    // Always check compat builtins, and check user functions if we have context
+                    check_function_imports_in_block(
+                        &func.body,
+                        &imported_functions,
+                        &local_functions,
+                        &function_info,
+                        function_context,
+                        func.color,
+                        &mut diagnostics,
+                    );
                 }
                 Item::Method(method) => {
                     // Check for return statements with values inside subscopes
@@ -204,6 +394,39 @@ pub fn compute_diagnostics(
                     check_function_calls_in_block(&method.body, &function_info, &mut diagnostics);
                     // Check for extra content after goto statements
                     check_goto_followed_by_expression(&method.body, &mut diagnostics);
+                    // Check for missing macro imports (only if we have macro context)
+                    if let Some(ctx) = macro_context {
+                        check_macro_imports_in_block(
+                            &method.body,
+                            &imported_macros,
+                            &local_macros,
+                            ctx,
+                            &mut diagnostics,
+                        );
+                    }
+                    // Check for missing function imports
+                    // Always check compat builtins, and check user functions if we have context
+                    check_function_imports_in_block(
+                        &method.body,
+                        &imported_functions,
+                        &local_functions,
+                        &function_info,
+                        function_context,
+                        method.color,
+                        &mut diagnostics,
+                    );
+                }
+                Item::Macro(macro_def) => {
+                    // Check macro body for missing macro imports (macros can call other macros)
+                    if let Some(ctx) = macro_context {
+                        check_macro_imports_in_block(
+                            &macro_def.body,
+                            &imported_macros,
+                            &local_macros,
+                            ctx,
+                            &mut diagnostics,
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -211,6 +434,1072 @@ pub fn compute_diagnostics(
     }
 
     diagnostics
+}
+
+/// Collect macro names imported via use statements
+fn collect_imported_macros(program: &Program) -> HashSet<String> {
+    let mut imported = HashSet::new();
+
+    for item in &program.items {
+        if let Item::Use(use_stmt) = item {
+            // All symbols in use statements could be macros
+            // We track them by name (without $ prefix)
+            for symbol in &use_stmt.symbols {
+                imported.insert(symbol.clone());
+            }
+        }
+    }
+
+    imported
+}
+
+/// Collect macro names defined locally in this file
+fn collect_local_macros(program: &Program) -> HashSet<String> {
+    let mut local = HashSet::new();
+
+    for item in &program.items {
+        if let Item::Macro(macro_def) = item {
+            local.insert(macro_def.name.clone());
+        }
+    }
+
+    local
+}
+
+/// Information about imported functions including module-level imports
+struct ImportedFunctions {
+    /// Explicitly imported function names
+    symbols: HashSet<String>,
+    /// Module paths that were imported at module level (e.g., `use compat.io`)
+    modules: HashSet<String>,
+}
+
+impl ImportedFunctions {
+    fn new() -> Self {
+        Self {
+            symbols: HashSet::new(),
+            modules: HashSet::new(),
+        }
+    }
+
+    /// Check if a function is available (either explicitly imported or via module import)
+    fn has_function(&self, name: &str) -> bool {
+        if self.symbols.contains(name) {
+            return true;
+        }
+        // Check if the function's module was imported at module level
+        if let Some(module) = builtins::get_required_import(name) {
+            if self.modules.contains(module) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Collect function names imported via use statements
+fn collect_imported_functions(program: &Program) -> ImportedFunctions {
+    let mut imported = ImportedFunctions::new();
+
+    for item in &program.items {
+        if let Item::Use(use_stmt) = item {
+            let module_path = use_stmt.module_path.join(".");
+
+            if use_stmt.symbols.is_empty() {
+                // Module-level import: `use compat.io`
+                imported.modules.insert(module_path);
+            } else {
+                // Symbol imports: `use { print } from compat.io`
+                for symbol in &use_stmt.symbols {
+                    imported.symbols.insert(symbol.clone());
+                }
+            }
+        }
+    }
+
+    imported
+}
+
+/// Collect function names defined locally in this file
+fn collect_local_functions(program: &Program) -> HashSet<String> {
+    let mut local = HashSet::new();
+
+    for item in &program.items {
+        if let Item::Function(func) = item {
+            local.insert(func.name.clone());
+        }
+    }
+
+    local
+}
+
+/// Check function imports in a block
+fn check_function_imports_in_block(
+    block: &Block,
+    imported_functions: &ImportedFunctions,
+    local_functions: &HashSet<String>,
+    function_info: &HashMap<String, FunctionInfo>,
+    function_context: Option<&FunctionContext>,
+    caller_color: FunctionColor,
+    diagnostics: &mut Diagnostics,
+) {
+    for stmt in &block.statements {
+        check_function_imports_in_statement(
+            stmt,
+            imported_functions,
+            local_functions,
+            function_info,
+            function_context,
+            caller_color,
+            diagnostics,
+        );
+    }
+}
+
+/// Check function imports in a statement
+fn check_function_imports_in_statement(
+    stmt: &Statement,
+    imported_functions: &ImportedFunctions,
+    local_functions: &HashSet<String>,
+    function_info: &HashMap<String, FunctionInfo>,
+    function_context: Option<&FunctionContext>,
+    caller_color: FunctionColor,
+    diagnostics: &mut Diagnostics,
+) {
+    match stmt {
+        Statement::VarDecl(var_decl) => {
+            check_function_imports_in_expression(
+                &var_decl.init,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Statement::Assignment(assign) => {
+            check_function_imports_in_expression(
+                &assign.value,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Statement::Expression(expr) => {
+            check_function_imports_in_expression(
+                expr,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Statement::Return(ret) => {
+            if let Some(val) = &ret.value {
+                check_function_imports_in_expression(
+                    val,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        }
+        Statement::If(if_stmt) => {
+            // Check condition
+            match &if_stmt.condition {
+                nexus_parser::IfCondition::Boolean(expr) => {
+                    check_function_imports_in_expression(
+                        expr,
+                        imported_functions,
+                        local_functions,
+                        function_info,
+                        function_context,
+                        caller_color,
+                        diagnostics,
+                    );
+                }
+                nexus_parser::IfCondition::Pattern { matcher, cases } => {
+                    check_function_imports_in_expression(
+                        matcher,
+                        imported_functions,
+                        local_functions,
+                        function_info,
+                        function_context,
+                        caller_color,
+                        diagnostics,
+                    );
+                    for case in cases {
+                        match &case.body {
+                            nexus_parser::PatternBody::Expression(expr) => {
+                                check_function_imports_in_expression(
+                                    expr,
+                                    imported_functions,
+                                    local_functions,
+                                    function_info,
+                                    function_context,
+                                    caller_color,
+                                    diagnostics,
+                                );
+                            }
+                            nexus_parser::PatternBody::Block(block) => {
+                                check_function_imports_in_block(
+                                    block,
+                                    imported_functions,
+                                    local_functions,
+                                    function_info,
+                                    function_context,
+                                    caller_color,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // Check then block
+            check_function_imports_in_block(
+                &if_stmt.then_block,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+            // Check else clause
+            if let Some(else_clause) = &if_stmt.else_block {
+                check_function_imports_in_else_clause(
+                    else_clause,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        }
+        Statement::Subscope(subscope) => {
+            check_function_imports_in_block(
+                &subscope.body,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Statement::Block(block) => {
+            check_function_imports_in_block(
+                block,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Statement::Defer(defer) => {
+            check_function_imports_in_block(
+                &defer.body,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Statement::Goto(_) => {}
+    }
+}
+
+/// Check function imports in an else clause
+fn check_function_imports_in_else_clause(
+    else_clause: &ElseClause,
+    imported_functions: &ImportedFunctions,
+    local_functions: &HashSet<String>,
+    function_info: &HashMap<String, FunctionInfo>,
+    function_context: Option<&FunctionContext>,
+    caller_color: FunctionColor,
+    diagnostics: &mut Diagnostics,
+) {
+    match else_clause {
+        ElseClause::Block(block) => {
+            check_function_imports_in_block(
+                block,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        ElseClause::ElseIf(else_if) => {
+            // Check condition
+            match &else_if.condition {
+                nexus_parser::IfCondition::Boolean(expr) => {
+                    check_function_imports_in_expression(
+                        expr,
+                        imported_functions,
+                        local_functions,
+                        function_info,
+                        function_context,
+                        caller_color,
+                        diagnostics,
+                    );
+                }
+                nexus_parser::IfCondition::Pattern { matcher, cases } => {
+                    check_function_imports_in_expression(
+                        matcher,
+                        imported_functions,
+                        local_functions,
+                        function_info,
+                        function_context,
+                        caller_color,
+                        diagnostics,
+                    );
+                    for case in cases {
+                        match &case.body {
+                            nexus_parser::PatternBody::Expression(expr) => {
+                                check_function_imports_in_expression(
+                                    expr,
+                                    imported_functions,
+                                    local_functions,
+                                    function_info,
+                                    function_context,
+                                    caller_color,
+                                    diagnostics,
+                                );
+                            }
+                            nexus_parser::PatternBody::Block(block) => {
+                                check_function_imports_in_block(
+                                    block,
+                                    imported_functions,
+                                    local_functions,
+                                    function_info,
+                                    function_context,
+                                    caller_color,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // Check then block
+            check_function_imports_in_block(
+                &else_if.then_block,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+            // Check nested else
+            if let Some(nested_else) = &else_if.else_block {
+                check_function_imports_in_else_clause(
+                    nested_else,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        }
+    }
+}
+
+/// Check function imports in an expression
+fn check_function_imports_in_expression(
+    expr: &Expression,
+    imported_functions: &ImportedFunctions,
+    local_functions: &HashSet<String>,
+    function_info: &HashMap<String, FunctionInfo>,
+    function_context: Option<&FunctionContext>,
+    caller_color: FunctionColor,
+    diagnostics: &mut Diagnostics,
+) {
+    match expr {
+        Expression::Call(call) => {
+            let name = &call.function;
+
+            // Check if it's a compat builtin that requires import
+            if let Some(module) = builtins::get_required_import(name) {
+                let required_color =
+                    builtins::get_builtin_color(name).unwrap_or(FunctionColor::Compat);
+                // Check if it's imported
+                if !imported_functions.has_function(name) {
+                    // Check color restrictions
+                    if !caller_color.can_call(required_color) {
+                        diagnostics.error(
+                            format!(
+                                "Function '{}' requires '{}' color but called from '{}' context",
+                                name, required_color, caller_color
+                            ),
+                            call.span,
+                        );
+                    } else {
+                        diagnostics.error(
+                            format!(
+                                "Function '{}' is not imported. Add: use {{ {} }} from {}",
+                                name, name, module
+                            ),
+                            call.span,
+                        );
+                    }
+                }
+                // Still check arguments recursively
+                for arg in &call.args {
+                    check_function_imports_in_expression(
+                        arg,
+                        imported_functions,
+                        local_functions,
+                        function_info,
+                        function_context,
+                        caller_color,
+                        diagnostics,
+                    );
+                }
+                return;
+            }
+
+            // Skip if it's a regular builtin function (no import required)
+            if builtins::is_core_builtin(name) {
+                // Still check arguments recursively
+                for arg in &call.args {
+                    check_function_imports_in_expression(
+                        arg,
+                        imported_functions,
+                        local_functions,
+                        function_info,
+                        function_context,
+                        caller_color,
+                        diagnostics,
+                    );
+                }
+                return;
+            }
+
+            // Skip if it's a local function or already imported
+            if local_functions.contains(name)
+                || imported_functions.has_function(name)
+                || function_info.contains_key(name)
+            {
+                // Still check arguments recursively
+                for arg in &call.args {
+                    check_function_imports_in_expression(
+                        arg,
+                        imported_functions,
+                        local_functions,
+                        function_info,
+                        function_context,
+                        caller_color,
+                        diagnostics,
+                    );
+                }
+                return;
+            }
+
+            // Function is not local, not imported, not a builtin - check if it exists in context
+            if let Some(ctx) = function_context {
+                if let Some(entries) = ctx.get_function_entries(name) {
+                    // Function exists somewhere - check if any are callable from current color
+                    let callable = ctx.get_callable_functions(name, caller_color);
+
+                    if callable.is_empty() {
+                        // Function exists but cannot be called due to color restrictions
+                        let available_colors: Vec<String> =
+                            entries.iter().map(|e| format!("{}", e.color)).collect();
+                        diagnostics.error(
+                        format!(
+                            "Function '{}' exists but cannot be called from '{}' context. Available in {} context(s): {}",
+                            name,
+                            caller_color,
+                            entries.len(),
+                            available_colors.join(", ")
+                        ),
+                        call.span,
+                    );
+                    } else {
+                        // Function exists and can be called - suggest import
+                        let suggestion = if callable.len() == 1 {
+                            format!("use {{ {} }} from {}", name, callable[0].module)
+                        } else {
+                            let modules: Vec<&str> =
+                                callable.iter().map(|e| e.module.as_str()).collect();
+                            format!(
+                                "use {{ {} }} from <module> (available in: {})",
+                                name,
+                                modules.join(", ")
+                            )
+                        };
+                        diagnostics.error(
+                            format!("Function '{}' is not imported. Add: {}", name, suggestion),
+                            call.span,
+                        );
+                    }
+                }
+                // If function doesn't exist in context, we don't report an error
+                // because the context might be incomplete (e.g., stdlib not loaded)
+            }
+
+            // Check arguments recursively
+            for arg in &call.args {
+                check_function_imports_in_expression(
+                    arg,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::MethodCall(method_call) => {
+            check_function_imports_in_expression(
+                &method_call.receiver,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+            for arg in &method_call.args {
+                check_function_imports_in_expression(
+                    arg,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::MacroCall(macro_call) => {
+            for arg in &macro_call.args {
+                check_function_imports_in_expression(
+                    arg,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::FieldAccess(field_access) => {
+            check_function_imports_in_expression(
+                &field_access.object,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Expression::Index(index) => {
+            check_function_imports_in_expression(
+                &index.array,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+            check_function_imports_in_expression(
+                &index.index,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Expression::Array(array) => {
+            for elem in &array.elements {
+                check_function_imports_in_expression(
+                    elem,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::StructInit(struct_init) => {
+            for field in &struct_init.fields {
+                check_function_imports_in_expression(
+                    &field.value,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::Lambda(lambda) => match &lambda.body {
+            nexus_parser::LambdaBody::Expression(expr) => {
+                check_function_imports_in_expression(
+                    expr,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+            nexus_parser::LambdaBody::Block(block) => {
+                check_function_imports_in_block(
+                    block,
+                    imported_functions,
+                    local_functions,
+                    function_info,
+                    function_context,
+                    caller_color,
+                    diagnostics,
+                );
+            }
+        },
+        Expression::Grouped(inner, _) => {
+            check_function_imports_in_expression(
+                inner,
+                imported_functions,
+                local_functions,
+                function_info,
+                function_context,
+                caller_color,
+                diagnostics,
+            );
+        }
+        Expression::Literal(_) | Expression::Variable(_) => {}
+    }
+}
+
+/// Check macro imports in a block
+fn check_macro_imports_in_block(
+    block: &Block,
+    imported_macros: &HashSet<String>,
+    local_macros: &HashSet<String>,
+    macro_context: &MacroContext,
+    diagnostics: &mut Diagnostics,
+) {
+    for stmt in &block.statements {
+        check_macro_imports_in_statement(
+            stmt,
+            imported_macros,
+            local_macros,
+            macro_context,
+            diagnostics,
+        );
+    }
+}
+
+/// Check macro imports in a statement
+fn check_macro_imports_in_statement(
+    stmt: &Statement,
+    imported_macros: &HashSet<String>,
+    local_macros: &HashSet<String>,
+    macro_context: &MacroContext,
+    diagnostics: &mut Diagnostics,
+) {
+    match stmt {
+        Statement::VarDecl(var_decl) => {
+            check_macro_imports_in_expression(
+                &var_decl.init,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Statement::Assignment(assign) => {
+            check_macro_imports_in_expression(
+                &assign.value,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Statement::Expression(expr) => {
+            check_macro_imports_in_expression(
+                expr,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Statement::Return(ret) => {
+            if let Some(val) = &ret.value {
+                check_macro_imports_in_expression(
+                    val,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        }
+        Statement::If(if_stmt) => {
+            // Check condition
+            match &if_stmt.condition {
+                nexus_parser::IfCondition::Boolean(expr) => {
+                    check_macro_imports_in_expression(
+                        expr,
+                        imported_macros,
+                        local_macros,
+                        macro_context,
+                        diagnostics,
+                    );
+                }
+                nexus_parser::IfCondition::Pattern { matcher, cases } => {
+                    check_macro_imports_in_expression(
+                        matcher,
+                        imported_macros,
+                        local_macros,
+                        macro_context,
+                        diagnostics,
+                    );
+                    for case in cases {
+                        match &case.body {
+                            nexus_parser::PatternBody::Expression(expr) => {
+                                check_macro_imports_in_expression(
+                                    expr,
+                                    imported_macros,
+                                    local_macros,
+                                    macro_context,
+                                    diagnostics,
+                                );
+                            }
+                            nexus_parser::PatternBody::Block(block) => {
+                                check_macro_imports_in_block(
+                                    block,
+                                    imported_macros,
+                                    local_macros,
+                                    macro_context,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // Check then block
+            check_macro_imports_in_block(
+                &if_stmt.then_block,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+            // Check else clause
+            if let Some(else_clause) = &if_stmt.else_block {
+                check_macro_imports_in_else_clause(
+                    else_clause,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        }
+        Statement::Subscope(subscope) => {
+            check_macro_imports_in_block(
+                &subscope.body,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Statement::Block(block) => {
+            check_macro_imports_in_block(
+                block,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Statement::Defer(defer) => {
+            check_macro_imports_in_block(
+                &defer.body,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Statement::Goto(_) => {}
+    }
+}
+
+/// Check macro imports in an else clause
+fn check_macro_imports_in_else_clause(
+    else_clause: &ElseClause,
+    imported_macros: &HashSet<String>,
+    local_macros: &HashSet<String>,
+    macro_context: &MacroContext,
+    diagnostics: &mut Diagnostics,
+) {
+    match else_clause {
+        ElseClause::Block(block) => {
+            check_macro_imports_in_block(
+                block,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        ElseClause::ElseIf(else_if) => {
+            // Check condition
+            match &else_if.condition {
+                nexus_parser::IfCondition::Boolean(expr) => {
+                    check_macro_imports_in_expression(
+                        expr,
+                        imported_macros,
+                        local_macros,
+                        macro_context,
+                        diagnostics,
+                    );
+                }
+                nexus_parser::IfCondition::Pattern { matcher, cases } => {
+                    check_macro_imports_in_expression(
+                        matcher,
+                        imported_macros,
+                        local_macros,
+                        macro_context,
+                        diagnostics,
+                    );
+                    for case in cases {
+                        match &case.body {
+                            nexus_parser::PatternBody::Expression(expr) => {
+                                check_macro_imports_in_expression(
+                                    expr,
+                                    imported_macros,
+                                    local_macros,
+                                    macro_context,
+                                    diagnostics,
+                                );
+                            }
+                            nexus_parser::PatternBody::Block(block) => {
+                                check_macro_imports_in_block(
+                                    block,
+                                    imported_macros,
+                                    local_macros,
+                                    macro_context,
+                                    diagnostics,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // Check then block
+            check_macro_imports_in_block(
+                &else_if.then_block,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+            // Check nested else
+            if let Some(nested_else) = &else_if.else_block {
+                check_macro_imports_in_else_clause(
+                    nested_else,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        }
+    }
+}
+
+/// Check macro imports in an expression
+fn check_macro_imports_in_expression(
+    expr: &Expression,
+    imported_macros: &HashSet<String>,
+    local_macros: &HashSet<String>,
+    macro_context: &MacroContext,
+    diagnostics: &mut Diagnostics,
+) {
+    match expr {
+        Expression::MacroCall(macro_call) => {
+            let name = &macro_call.name;
+
+            // Check if macro is imported or locally defined
+            if !imported_macros.contains(name) && !local_macros.contains(name) {
+                // Macro is not imported - check if it exists in the context
+                if let Some(modules) = macro_context.get_macro_modules(name) {
+                    // Macro exists but is not imported - provide helpful error
+                    let suggestion = if modules.len() == 1 {
+                        format!("use {{ {} }} from {}", name, modules[0])
+                    } else {
+                        format!(
+                            "use {{ {} }} from <module> (available in: {})",
+                            name,
+                            modules.join(", ")
+                        )
+                    };
+                    diagnostics.error(
+                        format!("Macro '${}' is not imported. Add: {}", name, suggestion),
+                        macro_call.span,
+                    );
+                }
+                // If macro doesn't exist in context, we don't report an error
+                // because the context might be incomplete (e.g., stdlib not loaded)
+            }
+
+            // Also check arguments recursively
+            for arg in &macro_call.args {
+                check_macro_imports_in_expression(
+                    arg,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::Call(call) => {
+            for arg in &call.args {
+                check_macro_imports_in_expression(
+                    arg,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::MethodCall(method_call) => {
+            check_macro_imports_in_expression(
+                &method_call.receiver,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+            for arg in &method_call.args {
+                check_macro_imports_in_expression(
+                    arg,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::FieldAccess(field_access) => {
+            check_macro_imports_in_expression(
+                &field_access.object,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Expression::Index(index) => {
+            check_macro_imports_in_expression(
+                &index.array,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+            check_macro_imports_in_expression(
+                &index.index,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Expression::Array(array) => {
+            for elem in &array.elements {
+                check_macro_imports_in_expression(
+                    elem,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::StructInit(struct_init) => {
+            for field in &struct_init.fields {
+                check_macro_imports_in_expression(
+                    &field.value,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        }
+        Expression::Lambda(lambda) => match &lambda.body {
+            nexus_parser::LambdaBody::Expression(expr) => {
+                check_macro_imports_in_expression(
+                    expr,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+            nexus_parser::LambdaBody::Block(block) => {
+                check_macro_imports_in_block(
+                    block,
+                    imported_macros,
+                    local_macros,
+                    macro_context,
+                    diagnostics,
+                );
+            }
+        },
+        Expression::Grouped(inner, _) => {
+            check_macro_imports_in_expression(
+                inner,
+                imported_macros,
+                local_macros,
+                macro_context,
+                diagnostics,
+            );
+        }
+        Expression::Literal(_) | Expression::Variable(_) => {}
+    }
 }
 
 /// Build a map of function names to their info for argument checking
@@ -844,9 +2133,10 @@ fn check_function_call(
     }
 
     // Then check builtins
-    if let Some(builtin) = BUILTINS.get(func_name.as_str()) {
+    if let Some(builtin_info) = builtins::get_any_builtin(func_name) {
+        let builtin = builtin_info.builtin;
         // Check if this is a variadic function (has a parameter type starting with "...")
-        let is_variadic = builtin.params.iter().any(|(_, ty)| ty.starts_with("..."));
+        let is_variadic = builtin.params.iter().any(|p| p.ty.starts_with("..."));
 
         if is_variadic {
             // Variadic functions accept any number of arguments of any type
@@ -867,11 +2157,9 @@ fn check_function_call(
                 );
             } else {
                 // Check argument types for builtins
-                for (i, (arg, (_, expected_type_str))) in
-                    call.args.iter().zip(builtin.params.iter()).enumerate()
-                {
+                for (i, (arg, param)) in call.args.iter().zip(builtin.params.iter()).enumerate() {
                     let arg_type = infer_expression_type(arg, function_info);
-                    let expected_type = InferredType::from_type_name(expected_type_str);
+                    let expected_type = InferredType::from_type_name(param.ty);
 
                     if !arg_type.is_compatible_with(&expected_type) {
                         diagnostics.error(
@@ -975,7 +2263,7 @@ mod tests {
         let content = "invalid syntax here";
         let ast = parse_content(content);
         let config = DiagnosticsConfig { enabled: false };
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
         assert!(diagnostics.is_empty());
     }
 
@@ -984,7 +2272,7 @@ mod tests {
         let content = "std main( {}"; // Missing closing paren and return type
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
         assert!(!diagnostics.is_empty());
     }
 
@@ -993,7 +2281,7 @@ mod tests {
         let content = "std main(): void { return }";
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
         assert!(diagnostics.is_empty());
     }
 
@@ -1009,7 +2297,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         // Should have an error about return with value in subscope
         assert!(!diagnostics.is_empty());
@@ -1027,7 +2315,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         // Subscope without return with value should be ok
         assert!(diagnostics.is_empty());
@@ -1042,7 +2330,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         // Return with value outside subscope should be ok
         assert!(diagnostics.is_empty());
@@ -1056,7 +2344,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -1074,7 +2362,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -1094,7 +2382,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -1118,7 +2406,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -1138,7 +2426,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -1162,7 +2450,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         // Should have errors for duplicate label and ambiguous goto
         assert!(!diagnostics.is_empty());
@@ -1180,7 +2468,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(diagnostics.iter().any(|d| d.message.contains("expects 2")));
@@ -1195,7 +2483,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(diagnostics.iter().any(|d| d.message.contains("expects 2")));
@@ -1213,7 +2501,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(diagnostics.is_empty());
     }
@@ -1230,7 +2518,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(diagnostics.is_empty());
     }
@@ -1244,7 +2532,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -1266,7 +2554,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -1287,7 +2575,7 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -1307,8 +2595,363 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics(content, &ast, &config);
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
 
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_macro_import_error_with_context() {
+        let config = DiagnosticsConfig::default();
+
+        // Create a "stdlib" document with a macro definition
+        let stdlib_content = r#"
+            $format([dyn]rune template): macro {
+                return template
+            }
+        "#;
+        let stdlib_ast = parse_content(stdlib_content);
+
+        // Create the main document that uses the macro without importing
+        let main_content = r#"
+            std main(): void {
+                m x = $format("hello")
+            }
+        "#;
+        let main_ast = parse_content(main_content);
+
+        // Build documents map
+        let mut documents: HashMap<String, (String, Option<Program>)> = HashMap::new();
+        documents.insert(
+            "file:///stdlib/std/util/strings/lib.nx".to_string(),
+            (stdlib_content.to_string(), stdlib_ast),
+        );
+        documents.insert(
+            "file:///main.nx".to_string(),
+            (main_content.to_string(), main_ast.clone()),
+        );
+
+        // Build macro context
+        let macro_context = MacroContext::from_documents(&documents);
+
+        // Should detect the missing import
+        let diags = compute_diagnostics_with_context(
+            main_content,
+            &main_ast,
+            &config,
+            Some(&macro_context),
+            None,
+        );
+        assert!(!diags.is_empty());
+        assert!(diags.iter().any(|d| d.message.contains("not imported")));
+    }
+
+    #[test]
+    fn test_macro_import_ok_when_imported() {
+        let config = DiagnosticsConfig::default();
+
+        // Create a document with a macro definition
+        let stdlib_content = r#"
+            $format([dyn]rune template): macro {
+                return template
+            }
+        "#;
+        let stdlib_ast = parse_content(stdlib_content);
+
+        // Create the main document that imports and uses the macro
+        let main_content = r#"
+            use { format } from std.util.strings
+
+            std main(): void {
+                m x = $format("hello")
+            }
+        "#;
+        let main_ast = parse_content(main_content);
+
+        // Build documents map
+        let mut documents: HashMap<String, (String, Option<Program>)> = HashMap::new();
+        documents.insert(
+            "file:///stdlib/std/util/strings/lib.nx".to_string(),
+            (stdlib_content.to_string(), stdlib_ast),
+        );
+        documents.insert(
+            "file:///main.nx".to_string(),
+            (main_content.to_string(), main_ast.clone()),
+        );
+
+        // Build macro context
+        let macro_context = MacroContext::from_documents(&documents);
+
+        // Should NOT report an error since macro is imported
+        let diags = compute_diagnostics_with_context(
+            main_content,
+            &main_ast,
+            &config,
+            Some(&macro_context),
+            None,
+        );
+        // Filter to only macro-related errors
+        let macro_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("not imported"))
+            .collect();
+        assert!(macro_errors.is_empty());
+    }
+
+    #[test]
+    fn test_function_import_error_with_context() {
+        // Test that we get an error when a function is used but not imported,
+        // and it exists in the function context
+        let content = r#"
+            std main(): void {
+                m x = helper()
+            }
+        "#;
+        let ast = parse_content(content);
+
+        // Create a function context with helper function available
+        let mut function_ctx = FunctionContext::new();
+        function_ctx.functions.insert(
+            "helper".to_string(),
+            vec![FunctionEntry {
+                module: "utils".to_string(),
+                color: nexus_core::FunctionColor::Std,
+            }],
+        );
+
+        let config = DiagnosticsConfig { enabled: true };
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, Some(&function_ctx));
+
+        assert!(
+            !diagnostics.is_empty(),
+            "Expected error for missing function import"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("helper") && d.message.contains("not imported")),
+            "Expected error about missing import for 'helper'"
+        );
+    }
+
+    #[test]
+    fn test_function_import_ok_when_imported() {
+        // Test that we don't get an error when a function is properly imported
+        let content = r#"
+            use { helper } from utils
+
+            std main(): void {
+                m x = helper()
+            }
+        "#;
+        let ast = parse_content(content);
+
+        // Create a function context with helper function available
+        let mut function_ctx = FunctionContext::new();
+        function_ctx.functions.insert(
+            "helper".to_string(),
+            vec![FunctionEntry {
+                module: "utils".to_string(),
+                color: nexus_core::FunctionColor::Std,
+            }],
+        );
+
+        let config = DiagnosticsConfig { enabled: true };
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, Some(&function_ctx));
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("helper") && d.message.contains("not imported")),
+            "Should not report error for imported function"
+        );
+    }
+
+    #[test]
+    fn test_function_color_restriction() {
+        // Test that we get an error when trying to call a compat function from std context
+        let content = r#"
+            std main(): void {
+                m x = io_func()
+            }
+        "#;
+        let ast = parse_content(content);
+
+        // Create a function context with io_func as compat color
+        let mut function_ctx = FunctionContext::new();
+        function_ctx.functions.insert(
+            "io_func".to_string(),
+            vec![FunctionEntry {
+                module: "compat.io".to_string(),
+                color: nexus_core::FunctionColor::Compat,
+            }],
+        );
+
+        let config = DiagnosticsConfig { enabled: true };
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, Some(&function_ctx));
+
+        // Should get an error about color restriction
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("io_func") && d.message.contains("cannot be called")),
+            "Expected error about color restriction for 'io_func'"
+        );
+    }
+
+    #[test]
+    fn test_local_function_ok() {
+        // Test that we don't get an error when calling a locally defined function
+        let content = r#"
+            std helper(): i64 {
+                return 42
+            }
+
+            std main(): void {
+                m x = helper()
+            }
+        "#;
+        let ast = parse_content(content);
+
+        // Create a function context (empty - helper is defined locally)
+        let function_ctx = FunctionContext::new();
+
+        let config = DiagnosticsConfig { enabled: true };
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, Some(&function_ctx));
+
+        // Should not report any function import errors
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("helper") && d.message.contains("not imported")),
+            "Should not report error for locally defined function"
+        );
+    }
+
+    #[test]
+    fn test_compat_io_missing_import() {
+        // Test that we get an error when using println without importing from compat.io
+        let content = r#"
+            compat main(): void {
+                println("hello")
+            }
+        "#;
+        let ast = parse_content(content);
+
+        let config = DiagnosticsConfig { enabled: true };
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("println") && d.message.contains("not imported")),
+            "Expected error about missing import for 'println'"
+        );
+    }
+
+    #[test]
+    fn test_compat_io_with_symbol_import() {
+        // Test that we don't get an error when println is properly imported
+        let content = r#"
+            use { println } from compat.io
+
+            compat main(): void {
+                println("hello")
+            }
+        "#;
+        let ast = parse_content(content);
+
+        let config = DiagnosticsConfig { enabled: true };
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("println") && d.message.contains("not imported")),
+            "Should not report error for imported println"
+        );
+    }
+
+    #[test]
+    fn test_compat_io_with_module_import() {
+        // Test that we don't get an error when compat.io is imported at module level
+        let content = r#"
+            use compat.io
+
+            compat main(): void {
+                println("hello")
+            }
+        "#;
+        let ast = parse_content(content);
+
+        let config = DiagnosticsConfig { enabled: true };
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("println") && d.message.contains("not imported")),
+            "Should not report error when module is imported"
+        );
+    }
+
+    #[test]
+    fn test_compat_io_color_restriction() {
+        // Test that we get an error when using println from std context
+        let content = r#"
+            std main(): void {
+                println("hello")
+            }
+        "#;
+        let ast = parse_content(content);
+
+        let config = DiagnosticsConfig { enabled: true };
+        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("println") && d.message.contains("color")),
+            "Expected error about color restriction for 'println'"
+        );
+    }
+
+    #[test]
+    fn test_local_macro_ok() {
+        let config = DiagnosticsConfig::default();
+
+        // Document with local macro definition and usage
+        let content = r#"
+            $my_macro([dyn]rune x): macro {
+                return x
+            }
+
+            std main(): void {
+                m x = $my_macro("hello")
+            }
+        "#;
+        let ast = parse_content(content);
+
+        // Build documents map with just this document
+        let mut documents: HashMap<String, (String, Option<Program>)> = HashMap::new();
+        documents.insert(
+            "file:///main.nx".to_string(),
+            (content.to_string(), ast.clone()),
+        );
+
+        let macro_context = MacroContext::from_documents(&documents);
+
+        let diags =
+            compute_diagnostics_with_context(content, &ast, &config, Some(&macro_context), None);
+        // Should not report any macro import errors
+        let macro_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("not imported"))
+            .collect();
+        assert!(macro_errors.is_empty());
     }
 }

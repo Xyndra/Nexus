@@ -449,11 +449,13 @@ dependencies = [
 name = "nexus-interpreter"
 version = "0.1.0"
 dependencies = [
+ "json5",
  "nexus-core",
  "nexus-lexer",
  "nexus-parser",
  "nexus-permissions",
  "nexus-types",
+ "serde",
  "thiserror",
 ]
 
@@ -475,6 +477,7 @@ dependencies = [
  "lsp-server",
  "lsp-types",
  "nexus-core",
+ "nexus-interpreter",
  "nexus-parser",
  "nexus-types",
  "serde",

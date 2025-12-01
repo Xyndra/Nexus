@@ -2,6 +2,26 @@
 //!
 //! This module handles resolving dependencies from their declarations
 //! to actual loadable source code.
+//!
+//! ## Hierarchical Module Structure
+//!
+//! Modules can contain submodules through subdirectories. A subdirectory
+//! automatically becomes a submodule with a dotted name based on its path.
+//!
+//! For example, given this directory structure:
+//! ```text
+//! std/
+//!   lib.nx           # std module code
+//!   util/
+//!     lib.nx         # std.util module code
+//!     strings/
+//!       lib.nx       # std.util.strings module code
+//! ```
+//!
+//! The resolver will load three modules: `std`, `std.util`, and `std.util.strings`.
+//!
+//! Subdirectories with a `nexus.json5` file are treated as independent modules
+//! and are NOT loaded as submodules (they must be imported separately as dependencies).
 
 use crate::config::ProjectConfig;
 use crate::dependency::{Dependency, DependencyKind};
@@ -9,6 +29,51 @@ use nexus_core::{NexusError, NexusResult};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Get the path to the standard library root directory
+/// This looks in several locations:
+/// 1. NEXUS_STDLIB environment variable
+/// 2. Relative to the executable (for installed versions)
+/// 3. Development path (relative to crate)
+pub fn find_stdlib_path() -> Option<PathBuf> {
+    // Check environment variable first
+    if let Ok(path) = std::env::var("NEXUS_STDLIB") {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // Check relative to executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let stdlib = exe_dir.join("stdlib").join("std");
+            if stdlib.exists() {
+                return Some(stdlib);
+            }
+            // Also check one level up (for bin/ layout)
+            let stdlib = exe_dir.parent().map(|p| p.join("stdlib").join("std"));
+            if let Some(ref s) = stdlib {
+                if s.exists() {
+                    return stdlib;
+                }
+            }
+        }
+    }
+
+    // Development path - relative to this crate's manifest
+    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("stdlib").join("std"));
+    if let Some(ref p) = dev_path {
+        if p.exists() {
+            return dev_path;
+        }
+    }
+
+    None
+}
 
 /// A fully resolved project with all dependencies loaded
 #[derive(Debug, Clone)]
@@ -23,6 +88,7 @@ pub struct ResolvedProject {
     pub dependencies: HashMap<String, ResolvedDependency>,
 
     /// Combined source from all modules (in load order)
+    /// This includes the main module and all submodules
     pub sources: Vec<ModuleSource>,
 }
 
@@ -45,13 +111,13 @@ pub struct ResolvedDependency {
 /// Source code for a single module
 #[derive(Debug, Clone)]
 pub struct ModuleSource {
-    /// Module name
+    /// Module name (may be dotted for submodules, e.g., "std.util.strings")
     pub name: String,
 
-    /// Path to the source file
+    /// Path to the module directory
     pub path: PathBuf,
 
-    /// Source code content
+    /// Source code content (combined from all .nx files in the module directory)
     pub content: String,
 }
 
@@ -73,8 +139,22 @@ impl DependencyResolver {
         }
     }
 
-    /// Resolve all dependencies for a project
+    /// Resolve all dependencies for a project (without stdlib)
     pub fn resolve(&self, config: &ProjectConfig) -> NexusResult<ResolvedProject> {
+        self.resolve_with_options(config, false)
+    }
+
+    /// Resolve all dependencies for a project, optionally including stdlib
+    pub fn resolve_with_stdlib(&self, config: &ProjectConfig) -> NexusResult<ResolvedProject> {
+        self.resolve_with_options(config, true)
+    }
+
+    /// Resolve all dependencies for a project with options
+    fn resolve_with_options(
+        &self,
+        config: &ProjectConfig,
+        include_stdlib: bool,
+    ) -> NexusResult<ResolvedProject> {
         let mut resolver = DependencyResolver {
             root_path: self.root_path.clone(),
             resolved: HashMap::new(),
@@ -83,20 +163,30 @@ impl DependencyResolver {
         let mut dependencies = HashMap::new();
         let mut sources = Vec::new();
 
+        // Load stdlib first if requested (with all submodules)
+        if include_stdlib {
+            if let Some(stdlib_path) = find_stdlib_path() {
+                let stdlib_sources = self.collect_module_with_submodules("std", &stdlib_path)?;
+                sources.extend(stdlib_sources);
+            }
+        }
+
         // Resolve each dependency
         for dep in &config.dependencies {
             let resolved = resolver.resolve_dependency(dep, &self.root_path)?;
 
-            // Load the dependency's source
-            let source = resolver.load_module_source(&resolved)?;
-            sources.push(source);
+            // Load the dependency's source with all submodules
+            let dep_sources = resolver
+                .load_module_with_submodules(&resolved.module_name, &resolved.resolved_path)?;
+            sources.extend(dep_sources);
 
             dependencies.insert(resolved.module_name.clone(), resolved);
         }
 
-        // Load the main module source (all .nx files in the root directory)
-        let main_source = self.collect_module_source(&config.module_name, &self.root_path)?;
-        sources.push(main_source);
+        // Load the main module source with all submodules
+        let main_sources =
+            self.collect_module_with_submodules(&config.module_name, &self.root_path)?;
+        sources.extend(main_sources);
 
         Ok(ResolvedProject {
             config: config.clone(),
@@ -106,10 +196,82 @@ impl DependencyResolver {
         })
     }
 
-    /// Collect all .nx files from a module directory into a single ModuleSource
+    /// Collect a module and all its submodules recursively.
+    /// Returns a list of ModuleSource in hierarchical order (parent before children).
+    fn collect_module_with_submodules(
+        &self,
+        module_name: &str,
+        dir: &PathBuf,
+    ) -> NexusResult<Vec<ModuleSource>> {
+        let mut sources = Vec::new();
+
+        // First, collect .nx files in the current directory (not recursive)
+        let module_source = self.collect_module_source(module_name, dir)?;
+        sources.push(module_source);
+
+        // Then, find and process subdirectories as submodules
+        let entries = fs::read_dir(dir).map_err(|e| NexusError::IoError {
+            message: format!("Failed to read directory '{}': {}", dir.display(), e),
+        })?;
+
+        let mut subdirs: Vec<(String, PathBuf)> = Vec::new();
+
+        for entry in entries {
+            let entry = entry.map_err(|e| NexusError::IoError {
+                message: format!("Failed to read directory entry: {}", e),
+            })?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                // Check if this subdirectory has its own nexus.json5
+                // If so, it's an independent module and should NOT be loaded as a submodule
+                let subdir_config = path.join("nexus.json5");
+                if subdir_config.exists() {
+                    continue;
+                }
+
+                // Check if it has any .nx files (directly or in subdirs)
+                if has_nx_files(&path) {
+                    if let Some(subdir_name) = path.file_name().and_then(|n| n.to_str()) {
+                        let submodule_name = format!("{}.{}", module_name, subdir_name);
+                        subdirs.push((submodule_name, path));
+                    }
+                }
+            }
+        }
+
+        // Sort subdirectories for consistent ordering
+        subdirs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Recursively collect submodules
+        for (submodule_name, subdir_path) in subdirs {
+            let submodule_sources =
+                self.collect_module_with_submodules(&submodule_name, &subdir_path)?;
+            sources.extend(submodule_sources);
+        }
+
+        Ok(sources)
+    }
+
+    /// Collect .nx files from a single directory (non-recursive) into a ModuleSource.
     fn collect_module_source(&self, module_name: &str, dir: &PathBuf) -> NexusResult<ModuleSource> {
         let mut nx_files: Vec<PathBuf> = Vec::new();
-        collect_nx_files_recursive(dir, &mut nx_files)?;
+
+        let entries = fs::read_dir(dir).map_err(|e| NexusError::IoError {
+            message: format!("Failed to read directory '{}': {}", dir.display(), e),
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| NexusError::IoError {
+                message: format!("Failed to read directory entry: {}", e),
+            })?;
+            let path = entry.path();
+
+            // Only collect .nx files directly in this directory (not subdirectories)
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "nx") {
+                nx_files.push(path);
+            }
+        }
 
         if nx_files.is_empty() {
             return Err(NexusError::IoError {
@@ -139,6 +301,15 @@ impl DependencyResolver {
             path: dir.clone(),
             content: combined_content,
         })
+    }
+
+    /// Load a module and its submodules for a resolved dependency
+    fn load_module_with_submodules(
+        &self,
+        module_name: &str,
+        dir: &PathBuf,
+    ) -> NexusResult<Vec<ModuleSource>> {
+        self.collect_module_with_submodules(module_name, dir)
     }
 
     /// Resolve a single dependency
@@ -234,13 +405,6 @@ impl DependencyResolver {
         url: &str,
         git_ref: &str,
     ) -> NexusResult<ResolvedDependency> {
-        // Git dependencies are not yet implemented
-        // In the future, this would:
-        // 1. Clone or fetch the repository to a cache directory
-        // 2. Checkout the specified ref
-        // 3. Load the nexus.json5 from the repo
-        // 4. Return the resolved dependency
-
         Err(NexusError::IoError {
             message: format!(
                 "Git dependencies are not yet implemented. Cannot resolve: git:{}:{}",
@@ -256,13 +420,6 @@ impl DependencyResolver {
         name: &str,
         version: &str,
     ) -> NexusResult<ResolvedDependency> {
-        // Registry dependencies are not yet implemented
-        // In the future, this would:
-        // 1. Query the package registry for the package
-        // 2. Download and cache the package
-        // 3. Load the nexus.json5 from the package
-        // 4. Return the resolved dependency
-
         Err(NexusError::IoError {
             message: format!(
                 "Registry dependencies are not yet implemented. Cannot resolve: registry:{}@{}",
@@ -270,38 +427,22 @@ impl DependencyResolver {
             ),
         })
     }
-
-    /// Load the source code for a resolved dependency
-    fn load_module_source(&self, resolved: &ResolvedDependency) -> NexusResult<ModuleSource> {
-        self.collect_module_source(&resolved.module_name, &resolved.resolved_path)
-    }
 }
 
-/// Recursively collect .nx files, stopping at subdirectories with their own nexus.json5
-fn collect_nx_files_recursive(dir: &PathBuf, files: &mut Vec<PathBuf>) -> NexusResult<()> {
-    let entries = fs::read_dir(dir).map_err(|e| NexusError::IoError {
-        message: format!("Failed to read directory '{}': {}", dir.display(), e),
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| NexusError::IoError {
-            message: format!("Failed to read directory entry: {}", e),
-        })?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            // Check if this subdirectory has its own nexus.json5
-            // If so, it's a separate module and we skip it
-            let subdir_config = path.join("nexus.json5");
-            if !subdir_config.exists() {
-                collect_nx_files_recursive(&path, files)?;
+/// Check if a directory contains any .nx files (recursively)
+fn has_nx_files(dir: &Path) -> bool {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|ext| ext == "nx") {
+                return true;
             }
-        } else if path.extension().is_some_and(|ext| ext == "nx") {
-            files.push(path);
+            if path.is_dir() && has_nx_files(&path) {
+                return true;
+            }
         }
     }
-
-    Ok(())
+    false
 }
 
 impl ResolvedProject {
@@ -314,9 +455,17 @@ impl ResolvedProject {
             .join("\n\n")
     }
 
-    /// Get the source for a specific module
+    /// Get the source for a specific module (exact match)
     pub fn get_module_source(&self, name: &str) -> Option<&ModuleSource> {
         self.sources.iter().find(|s| s.name == name)
+    }
+
+    /// Get all modules that start with a given prefix (e.g., "std" matches "std", "std.util", etc.)
+    pub fn get_modules_with_prefix(&self, prefix: &str) -> Vec<&ModuleSource> {
+        self.sources
+            .iter()
+            .filter(|s| s.name == prefix || s.name.starts_with(&format!("{}.", prefix)))
+            .collect()
     }
 }
 
@@ -340,7 +489,7 @@ mod tests {
             name
         );
         fs::write(dir.join("nexus.json5"), config)?;
-        fs::write(dir.join("module.nx"), main_content)?;
+        fs::write(dir.join("lib.nx"), main_content)?;
         Ok(())
     }
 
@@ -391,6 +540,127 @@ mod tests {
         let result = resolver.resolve(&config);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hierarchical_submodules() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        // Create main project with submodules
+        let main_config = r#"{
+            mod: 'mymod',
+            permissions: {},
+            deps: []
+        }"#;
+        fs::write(root.join("nexus.json5"), main_config).unwrap();
+        fs::write(root.join("lib.nx"), "// mymod root").unwrap();
+
+        // Create submodule: mymod.util
+        let util_dir = root.join("util");
+        fs::create_dir(&util_dir).unwrap();
+        fs::write(util_dir.join("lib.nx"), "// mymod.util").unwrap();
+
+        // Create sub-submodule: mymod.util.strings
+        let strings_dir = util_dir.join("strings");
+        fs::create_dir(&strings_dir).unwrap();
+        fs::write(strings_dir.join("lib.nx"), "// mymod.util.strings").unwrap();
+
+        // Resolve
+        let config = ProjectConfig::from_file(&root.join("nexus.json5")).unwrap();
+        let resolver = DependencyResolver::new(root.to_path_buf());
+        let resolved = resolver.resolve(&config).unwrap();
+
+        // Should have 3 modules: mymod, mymod.util, mymod.util.strings
+        assert_eq!(resolved.sources.len(), 3);
+
+        let module_names: Vec<&str> = resolved.sources.iter().map(|s| s.name.as_str()).collect();
+        assert!(module_names.contains(&"mymod"));
+        assert!(module_names.contains(&"mymod.util"));
+        assert!(module_names.contains(&"mymod.util.strings"));
+
+        // Check content
+        let mymod = resolved.get_module_source("mymod").unwrap();
+        assert!(mymod.content.contains("// mymod root"));
+
+        let util = resolved.get_module_source("mymod.util").unwrap();
+        assert!(util.content.contains("// mymod.util"));
+
+        let strings = resolved.get_module_source("mymod.util.strings").unwrap();
+        assert!(strings.content.contains("// mymod.util.strings"));
+    }
+
+    #[test]
+    fn test_subdir_with_nexus_json5_is_independent() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        // Create main project
+        let main_config = r#"{
+            mod: 'main',
+            permissions: {},
+            deps: []
+        }"#;
+        fs::write(root.join("nexus.json5"), main_config).unwrap();
+        fs::write(root.join("lib.nx"), "// main").unwrap();
+
+        // Create subdir with its own nexus.json5 (should NOT be loaded as submodule)
+        let other_dir = root.join("other");
+        fs::create_dir(&other_dir).unwrap();
+        create_test_project(&other_dir, "other", "// other module").unwrap();
+
+        // Resolve
+        let config = ProjectConfig::from_file(&root.join("nexus.json5")).unwrap();
+        let resolver = DependencyResolver::new(root.to_path_buf());
+        let resolved = resolver.resolve(&config).unwrap();
+
+        // Should only have 1 module (main), not main.other
+        assert_eq!(resolved.sources.len(), 1);
+        assert_eq!(resolved.sources[0].name, "main");
+    }
+
+    #[test]
+    fn test_get_modules_with_prefix() {
+        let project = ResolvedProject {
+            config: ProjectConfig {
+                module_name: "test".to_string(),
+                permissions: Default::default(),
+                dependencies: vec![],
+            },
+            root_path: PathBuf::from("."),
+            dependencies: HashMap::new(),
+            sources: vec![
+                ModuleSource {
+                    name: "std".to_string(),
+                    path: PathBuf::from("std"),
+                    content: "// std".to_string(),
+                },
+                ModuleSource {
+                    name: "std.util".to_string(),
+                    path: PathBuf::from("std/util"),
+                    content: "// std.util".to_string(),
+                },
+                ModuleSource {
+                    name: "std.util.strings".to_string(),
+                    path: PathBuf::from("std/util/strings"),
+                    content: "// std.util.strings".to_string(),
+                },
+                ModuleSource {
+                    name: "other".to_string(),
+                    path: PathBuf::from("other"),
+                    content: "// other".to_string(),
+                },
+            ],
+        };
+
+        let std_modules = project.get_modules_with_prefix("std");
+        assert_eq!(std_modules.len(), 3);
+
+        let util_modules = project.get_modules_with_prefix("std.util");
+        assert_eq!(util_modules.len(), 2);
+
+        let other_modules = project.get_modules_with_prefix("other");
+        assert_eq!(other_modules.len(), 1);
     }
 
     #[test]
