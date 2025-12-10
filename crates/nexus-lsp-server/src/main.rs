@@ -91,11 +91,11 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     })?;
 
     let init_params = connection.initialize(server_capabilities)?;
-    let _init_params: InitializeParams = serde_json::from_value(init_params)?;
+    let init_params: InitializeParams = serde_json::from_value(init_params)?;
 
     info!("Nexus LSP initialized");
 
-    main_loop(connection)?;
+    main_loop(connection, init_params)?;
 
     io_threads.join()?;
 
@@ -103,7 +103,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     Ok(())
 }
 
-fn main_loop(connection: Connection) -> Result<(), Box<dyn Error + Sync + Send>> {
+fn main_loop(
+    connection: Connection,
+    _init_params: InitializeParams,
+) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut lsp = Lsp::new();
 
     for msg in &connection.receiver {
@@ -217,7 +220,7 @@ fn handle_notification(
     Ok(())
 }
 
-fn handle_hover(lsp: &Lsp, params: HoverParams) -> Option<Hover> {
+fn handle_hover(lsp: &mut Lsp, params: HoverParams) -> Option<Hover> {
     let uri = params
         .text_document_position_params
         .text_document
@@ -293,7 +296,7 @@ fn handle_completion(lsp: &Lsp, params: CompletionParams) -> Option<CompletionRe
 }
 
 fn handle_goto_definition(
-    lsp: &Lsp,
+    lsp: &mut Lsp,
     params: GotoDefinitionParams,
 ) -> Option<GotoDefinitionResponse> {
     let uri = params

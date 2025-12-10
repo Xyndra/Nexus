@@ -613,4 +613,45 @@ std main(): void { m y = a(b(c())) }
             "Should point to b function on line 2"
         );
     }
+
+    #[test]
+    fn test_goto_definition_same_module_without_import() {
+        // Test that goto-definition works for functions in the same module without imports
+        // File 1: defines a helper function
+        let content1 = "std helper(): i64 { return 42 }";
+        let ast1 = parse_content(content1).unwrap();
+
+        // File 2: calls helper without importing it (same module)
+        let content2 = "std main(): void { m x = helper() }";
+        let ast2 = parse_content(content2).unwrap();
+
+        // Both files are in the same directory (same module)
+        let mut documents = HashMap::new();
+        documents.insert(
+            "file:///D:/project/mymodule/helper.nx".to_string(),
+            (content1.to_string(), Some(ast1)),
+        );
+        documents.insert(
+            "file:///D:/project/mymodule/main.nx".to_string(),
+            (content2.to_string(), Some(ast2.clone())),
+        );
+
+        // Find the position of "helper" in the call
+        let helper_pos = content2.find("helper").unwrap();
+
+        // This should find the helper function definition even without an import
+        let loc = find_definition(
+            "file:///D:/project/mymodule/main.nx",
+            content2,
+            &ast2,
+            helper_pos,
+            &documents,
+        );
+        assert!(
+            loc.is_some(),
+            "Should find definition for same-module function without import"
+        );
+        let loc = loc.unwrap();
+        assert_eq!(loc.uri, "file:///D:/project/mymodule/helper.nx");
+    }
 }

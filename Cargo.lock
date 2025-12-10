@@ -479,6 +479,7 @@ dependencies = [
  "nexus-core",
  "nexus-interpreter",
  "nexus-parser",
+ "nexus-project",
  "nexus-types",
  "serde",
  "serde_json",

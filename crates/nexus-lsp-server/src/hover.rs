@@ -566,32 +566,32 @@ fn get_function_hover(
         // Try to find the function in the imported module's document
         for (uri, (doc_content, maybe_ast)) in documents {
             // Check if this document is the imported module
-            if uri.contains(&module_path.join("/")) || uri.contains(&module_path.join("\\")) {
-                if let Some(ast) = maybe_ast {
-                    for func in ast.functions() {
-                        if func.name == name {
-                            let params: Vec<String> =
-                                func.params.iter().map(format_parameter).collect();
-                            let doc_comment = extract_doc_comment(doc_content, &func.span);
+            if (uri.contains(&module_path.join("/")) || uri.contains(&module_path.join("\\")))
+                && let Some(ast) = maybe_ast
+            {
+                for func in ast.functions() {
+                    if func.name == name {
+                        let params: Vec<String> =
+                            func.params.iter().map(format_parameter).collect();
+                        let doc_comment = extract_doc_comment(doc_content, &func.span);
 
-                            let mut hover_content = format!(
-                                "```nexus\n{} {}({}): {}\n```",
-                                func.color,
-                                func.name,
-                                params.join(", "),
-                                format_type_expr(&func.return_type),
-                            );
+                        let mut hover_content = format!(
+                            "```nexus\n{} {}({}): {}\n```",
+                            func.color,
+                            func.name,
+                            params.join(", "),
+                            format_type_expr(&func.return_type),
+                        );
 
-                            if !doc_comment.is_empty() {
-                                hover_content.push_str("\n\n---\n\n");
-                                hover_content.push_str(&doc_comment);
-                            }
-
-                            return Some(HoverInfo {
-                                contents: hover_content,
-                                range: None,
-                            });
+                        if !doc_comment.is_empty() {
+                            hover_content.push_str("\n\n---\n\n");
+                            hover_content.push_str(&doc_comment);
                         }
+
+                        return Some(HoverInfo {
+                            contents: hover_content,
+                            range: None,
+                        });
                     }
                 }
             }
@@ -599,7 +599,7 @@ fn get_function_hover(
     }
 
     // Try to find the function in any of the loaded documents
-    for (_, (doc_content, maybe_ast)) in documents {
+    for (doc_content, maybe_ast) in documents.values() {
         if let Some(ast) = maybe_ast {
             for func in ast.functions() {
                 if func.name == name {
@@ -748,5 +748,41 @@ std main(): void {
         assert!(hover.contents.contains("Macro Expansion"));
         // The expansion of $identity("hello world") should be "hello world"
         assert!(hover.contents.contains("hello world"));
+    }
+
+    #[test]
+    fn test_hover_same_module_without_import() {
+        // Test that hovering on a function from the same module works without imports
+        // File 1: defines a helper function
+        let content1 = "std helper(): i64 { return 42 }";
+        let ast1 = parse_content(content1).unwrap();
+
+        // File 2: calls helper without importing it (same module)
+        let content2 = "std main(): void { m x = helper() }";
+        let ast2 = parse_content(content2).unwrap();
+
+        // Both files are in the same directory (same module)
+        let mut documents = HashMap::new();
+        documents.insert(
+            "file:///D:/project/mymodule/helper.nx".to_string(),
+            (content1.to_string(), Some(ast1)),
+        );
+        documents.insert(
+            "file:///D:/project/mymodule/main.nx".to_string(),
+            (content2.to_string(), Some(ast2.clone())),
+        );
+
+        // Find the position of "helper" in the call
+        let helper_pos = content2.find("helper").unwrap();
+
+        // This should find the helper function definition even without an import
+        let hover = find_hover(content2, &ast2, helper_pos, &documents);
+        assert!(
+            hover.is_some(),
+            "Should find hover info for same-module function without import"
+        );
+        let hover_info = hover.unwrap();
+        assert!(hover_info.contents.contains("helper"));
+        assert!(hover_info.contents.contains("i64"));
     }
 }

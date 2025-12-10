@@ -14,6 +14,8 @@ mod types;
 mod utils;
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 
 use nexus_core::Diagnostics;
 use nexus_parser::{Program, parse};
@@ -92,6 +94,66 @@ impl Lsp {
         }
     }
 
+    /// Load all .nx files from the same directory as the given URI
+    fn load_module_files(&self, uri: &str) -> HashMap<String, (String, Option<Program>)> {
+        let mut files = HashMap::new();
+
+        // Extract directory path from URI
+        let path = uri
+            .strip_prefix("file:///")
+            .or_else(|| uri.strip_prefix("file://"))
+            .unwrap_or(uri);
+
+        // Remove Windows extended path prefix if present
+        let path = if let Some(path) = path.strip_prefix(r"\\?\") {
+            path
+        } else {
+            path
+        };
+
+        let path_buf = PathBuf::from(path);
+        let dir = match path_buf.parent() {
+            Some(d) => d,
+            None => return files,
+        };
+
+        // Read all .nx files from the directory
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return files,
+        };
+
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+
+            // Only process .nx files
+            if entry_path.is_file()
+                && entry_path.extension().is_some_and(|ext| ext == "nx")
+                && let Ok(content) = fs::read_to_string(&entry_path)
+            {
+                let ast = parse(&content).ok();
+
+                // Convert path to URI
+                let mut path_str = entry_path.display().to_string();
+
+                // Remove Windows extended path prefix if present
+                if path_str.starts_with(r"\\?\") {
+                    path_str = path_str[4..].to_string();
+                }
+
+                // Normalize path separators
+                path_str = path_str.replace('\\', "/");
+
+                // Create proper file URI
+                let file_uri = format!("file:///{}", path_str);
+
+                files.insert(file_uri, (content, ast));
+            }
+        }
+
+        files
+    }
+
     /// Open a document in the LSP server.
     pub fn open_document(&mut self, uri: &str, content: &str, version: i32) {
         let ast = parse(content).ok();
@@ -129,11 +191,19 @@ impl Lsp {
         };
 
         // Build documents map for macro and function context
-        let documents_map: HashMap<String, (String, Option<Program>)> = self
+        // Include all opened documents
+        let mut documents_map: HashMap<String, (String, Option<Program>)> = self
             .documents
             .iter()
             .map(|(u, doc)| (u.clone(), (doc.content.clone(), doc.ast.clone())))
             .collect();
+
+        // Also load all .nx files from the same directory (same module)
+        let module_files = self.load_module_files(uri);
+        for (file_uri, (content, ast)) in module_files {
+            // Don't overwrite already opened documents
+            documents_map.entry(file_uri).or_insert((content, ast));
+        }
 
         // Build macro context from all documents
         let macro_context = MacroContext::from_documents(&documents_map);
@@ -149,6 +219,7 @@ impl Lsp {
                 &diag_config,
                 Some(&macro_context),
                 Some(&function_context),
+                Some(uri),
             );
             self.diagnostics.insert(uri.to_string(), diags);
         }
@@ -172,11 +243,19 @@ impl Lsp {
         let offset = utils::position_to_offset(&doc.content, position)?;
 
         // Build a map of documents for cross-file resolution
-        let documents: HashMap<String, (String, Option<Program>)> = self
+        // Include all opened documents
+        let mut documents: HashMap<String, (String, Option<Program>)> = self
             .documents
             .iter()
             .map(|(uri, doc)| (uri.clone(), (doc.content.clone(), doc.ast.clone())))
             .collect();
+
+        // Also load all .nx files from the same directory (same module)
+        let module_files = self.load_module_files(uri);
+        for (file_uri, (content, ast)) in module_files {
+            // Don't overwrite already opened documents
+            documents.entry(file_uri).or_insert((content, ast));
+        }
 
         hover::find_hover(&doc.content, ast, offset, &documents)
     }
@@ -188,11 +267,19 @@ impl Lsp {
         let offset = utils::position_to_offset(&doc.content, position)?;
 
         // Build a map of documents for cross-file resolution
-        let documents: HashMap<String, (String, Option<Program>)> = self
+        // Include all opened documents
+        let mut documents: HashMap<String, (String, Option<Program>)> = self
             .documents
             .iter()
             .map(|(uri, doc)| (uri.clone(), (doc.content.clone(), doc.ast.clone())))
             .collect();
+
+        // Also load all .nx files from the same directory (same module)
+        let module_files = self.load_module_files(uri);
+        for (file_uri, (content, ast)) in module_files {
+            // Don't overwrite already opened documents
+            documents.entry(file_uri).or_insert((content, ast));
+        }
 
         goto_definition::find_definition(uri, &doc.content, ast, offset, &documents)
     }

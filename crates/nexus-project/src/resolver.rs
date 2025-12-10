@@ -45,19 +45,19 @@ pub fn find_stdlib_path() -> Option<PathBuf> {
     }
 
     // Check relative to executable
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let stdlib = exe_dir.join("stdlib").join("std");
-            if stdlib.exists() {
-                return Some(stdlib);
-            }
-            // Also check one level up (for bin/ layout)
-            let stdlib = exe_dir.parent().map(|p| p.join("stdlib").join("std"));
-            if let Some(ref s) = stdlib {
-                if s.exists() {
-                    return stdlib;
-                }
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+    {
+        let stdlib = exe_dir.join("stdlib").join("std");
+        if stdlib.exists() {
+            return Some(stdlib);
+        }
+        // Also check one level up (for bin/ layout)
+        let stdlib = exe_dir.parent().map(|p| p.join("stdlib").join("std"));
+        if let Some(ref s) = stdlib
+            && s.exists()
+        {
+            return stdlib;
         }
     }
 
@@ -66,10 +66,10 @@ pub fn find_stdlib_path() -> Option<PathBuf> {
         .parent()
         .and_then(|p| p.parent())
         .map(|p| p.join("stdlib").join("std"));
-    if let Some(ref p) = dev_path {
-        if p.exists() {
-            return dev_path;
-        }
+    if let Some(ref p) = dev_path
+        && p.exists()
+    {
+        return dev_path;
     }
 
     None
@@ -119,6 +119,9 @@ pub struct ModuleSource {
 
     /// Source code content (combined from all .nx files in the module directory)
     pub content: String,
+
+    /// Individual source files that were combined (in order)
+    pub files: Vec<PathBuf>,
 }
 
 /// Resolver for project dependencies
@@ -164,11 +167,9 @@ impl DependencyResolver {
         let mut sources = Vec::new();
 
         // Load stdlib first if requested (with all submodules)
-        if include_stdlib {
-            if let Some(stdlib_path) = find_stdlib_path() {
-                let stdlib_sources = self.collect_module_with_submodules("std", &stdlib_path)?;
-                sources.extend(stdlib_sources);
-            }
+        if include_stdlib && let Some(stdlib_path) = find_stdlib_path() {
+            let stdlib_sources = self.collect_module_with_submodules("std", &stdlib_path)?;
+            sources.extend(stdlib_sources);
         }
 
         // Resolve each dependency
@@ -198,7 +199,7 @@ impl DependencyResolver {
 
     /// Collect a module and all its submodules recursively.
     /// Returns a list of ModuleSource in hierarchical order (parent before children).
-    fn collect_module_with_submodules(
+    pub fn collect_module_with_submodules(
         &self,
         module_name: &str,
         dir: &PathBuf,
@@ -231,11 +232,11 @@ impl DependencyResolver {
                 }
 
                 // Check if it has any .nx files (directly or in subdirs)
-                if has_nx_files(&path) {
-                    if let Some(subdir_name) = path.file_name().and_then(|n| n.to_str()) {
-                        let submodule_name = format!("{}.{}", module_name, subdir_name);
-                        subdirs.push((submodule_name, path));
-                    }
+                if has_nx_files(&path)
+                    && let Some(subdir_name) = path.file_name().and_then(|n| n.to_str())
+                {
+                    let submodule_name = format!("{}.{}", module_name, subdir_name);
+                    subdirs.push((submodule_name, path));
                 }
             }
         }
@@ -300,6 +301,7 @@ impl DependencyResolver {
             name: module_name.to_string(),
             path: dir.clone(),
             content: combined_content,
+            files: nx_files,
         })
     }
 
@@ -634,21 +636,25 @@ mod tests {
                     name: "std".to_string(),
                     path: PathBuf::from("std"),
                     content: "// std".to_string(),
+                    files: vec![],
                 },
                 ModuleSource {
                     name: "std.util".to_string(),
                     path: PathBuf::from("std/util"),
                     content: "// std.util".to_string(),
+                    files: vec![],
                 },
                 ModuleSource {
                     name: "std.util.strings".to_string(),
                     path: PathBuf::from("std/util/strings"),
                     content: "// std.util.strings".to_string(),
+                    files: vec![],
                 },
                 ModuleSource {
                     name: "other".to_string(),
                     path: PathBuf::from("other"),
                     content: "// other".to_string(),
+                    files: vec![],
                 },
             ],
         };
@@ -678,11 +684,13 @@ mod tests {
                     name: "lib".to_string(),
                     path: PathBuf::from("lib"),
                     content: "// lib code".to_string(),
+                    files: vec![],
                 },
                 ModuleSource {
                     name: "main".to_string(),
                     path: PathBuf::from("."),
                     content: "// main code".to_string(),
+                    files: vec![],
                 },
             ],
         };

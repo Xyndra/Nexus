@@ -17,6 +17,7 @@ nexus-types.workspace = true
 nexus-parser.workspace = true
 nexus-core.workspace = true
 nexus-interpreter = { workspace = true, features = ["builtin-docs"] }
+nexus-project.workspace = true
 
 lsp-server = "0.7"
 lsp-types = "0.95"

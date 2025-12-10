@@ -55,30 +55,36 @@ impl MacroContext {
     fn module_name_from_uri(uri: &str) -> String {
         // Try to extract meaningful module name from path
         // e.g., "file:///path/to/std/util/strings/lib.nx" -> "std.util.strings"
+        // For same-module detection, files in the same directory should have the same module name
         let path = uri
             .strip_prefix("file:///")
             .or_else(|| uri.strip_prefix("file://"))
             .unwrap_or(uri);
 
+        // Get the directory path (everything before the last separator)
+        // This ensures all files in the same directory have the same module identifier
+        let dir_path = if let Some(last_sep) = path.rfind(|c| ['/', '\\'].contains(&c)) {
+            &path[..last_sep]
+        } else {
+            path
+        };
+
         // Look for stdlib pattern
-        if let Some(idx) = path.find("stdlib") {
-            let after_stdlib = &path[idx + 7..]; // Skip "stdlib/"
+        if let Some(idx) = dir_path.find("stdlib") {
+            let after_stdlib = &dir_path[idx + 7..]; // Skip "stdlib/"
             let parts: Vec<&str> = after_stdlib
                 .trim_start_matches(['/', '\\'])
                 .split(['/', '\\'])
-                .filter(|p| !p.is_empty() && *p != "lib.nx" && !p.ends_with(".nx"))
+                .filter(|p| !p.is_empty())
                 .collect();
             if !parts.is_empty() {
                 return parts.join(".");
             }
         }
 
-        // Fallback: use filename without extension
-        path.rsplit(['/', '\\'])
-            .next()
-            .unwrap_or("unknown")
-            .trim_end_matches(".nx")
-            .to_string()
+        // Return the directory path as the module identifier
+        // This ensures all files in the same directory are treated as the same module
+        dir_path.to_string()
     }
 
     /// Get module paths where a macro is defined
@@ -317,6 +323,7 @@ pub fn compute_diagnostics_with_context(
     config: &DiagnosticsConfig,
     macro_context: Option<&MacroContext>,
     function_context: Option<&FunctionContext>,
+    uri: Option<&str>,
 ) -> Diagnostics {
     let mut diagnostics = Diagnostics::new();
 
@@ -345,7 +352,23 @@ pub fn compute_diagnostics_with_context(
 
         // Collect imported functions and locally defined functions for function import checking
         let imported_functions = collect_imported_functions(program);
-        let local_functions = collect_local_functions(program);
+        let mut local_functions = collect_local_functions(program);
+
+        // Add functions from the same module as "local" (they don't need imports)
+        if let Some(current_uri) = uri
+            && let Some(ctx) = function_context
+        {
+            let current_module = extract_module_from_uri(current_uri);
+            // Add all functions from the same module
+            for (func_name, entries) in &ctx.functions {
+                for entry in entries {
+                    if entry.module == current_module {
+                        local_functions.insert(func_name.clone());
+                        break;
+                    }
+                }
+            }
+        }
 
         // Check each item
         for item in &program.items {
@@ -436,7 +459,22 @@ pub fn compute_diagnostics_with_context(
     diagnostics
 }
 
-/// Collect macro names imported via use statements
+/// Extract module identifier from URI by getting the directory path
+/// Files in the same directory belong to the same module
+fn extract_module_from_uri(uri: &str) -> String {
+    let path = uri
+        .strip_prefix("file:///")
+        .or_else(|| uri.strip_prefix("file://"))
+        .unwrap_or(uri);
+
+    // Get the directory path (everything before the last separator)
+    if let Some(last_sep) = path.rfind(|c| ['/', '\\'].contains(&c)) {
+        path[..last_sep].to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 fn collect_imported_macros(program: &Program) -> HashSet<String> {
     let mut imported = HashSet::new();
 
@@ -488,10 +526,10 @@ impl ImportedFunctions {
             return true;
         }
         // Check if the function's module was imported at module level
-        if let Some(module) = builtins::get_required_import(name) {
-            if self.modules.contains(module) {
-                return true;
-            }
+        if let Some(module) = builtins::get_required_import(name)
+            && self.modules.contains(module)
+        {
+            return true;
         }
         false
     }
@@ -917,16 +955,17 @@ fn check_function_imports_in_expression(
             }
 
             // Function is not local, not imported, not a builtin - check if it exists in context
-            if let Some(ctx) = function_context {
-                if let Some(entries) = ctx.get_function_entries(name) {
-                    // Function exists somewhere - check if any are callable from current color
-                    let callable = ctx.get_callable_functions(name, caller_color);
+            if let Some(ctx) = function_context
+                && let Some(entries) = ctx.get_function_entries(name)
+            {
+                // Function exists somewhere - check if any are callable from current color
+                let callable = ctx.get_callable_functions(name, caller_color);
 
-                    if callable.is_empty() {
-                        // Function exists but cannot be called due to color restrictions
-                        let available_colors: Vec<String> =
-                            entries.iter().map(|e| format!("{}", e.color)).collect();
-                        diagnostics.error(
+                if callable.is_empty() {
+                    // Function exists but cannot be called due to color restrictions
+                    let available_colors: Vec<String> =
+                        entries.iter().map(|e| format!("{}", e.color)).collect();
+                    diagnostics.error(
                         format!(
                             "Function '{}' exists but cannot be called from '{}' context. Available in {} context(s): {}",
                             name,
@@ -936,24 +975,23 @@ fn check_function_imports_in_expression(
                         ),
                         call.span,
                     );
+                } else {
+                    // Function exists and can be called - suggest import
+                    let suggestion = if callable.len() == 1 {
+                        format!("use {{ {} }} from {}", name, callable[0].module)
                     } else {
-                        // Function exists and can be called - suggest import
-                        let suggestion = if callable.len() == 1 {
-                            format!("use {{ {} }} from {}", name, callable[0].module)
-                        } else {
-                            let modules: Vec<&str> =
-                                callable.iter().map(|e| e.module.as_str()).collect();
-                            format!(
-                                "use {{ {} }} from <module> (available in: {})",
-                                name,
-                                modules.join(", ")
-                            )
-                        };
-                        diagnostics.error(
-                            format!("Function '{}' is not imported. Add: {}", name, suggestion),
-                            call.span,
-                        );
-                    }
+                        let modules: Vec<&str> =
+                            callable.iter().map(|e| e.module.as_str()).collect();
+                        format!(
+                            "use {{ {} }} from <module> (available in: {})",
+                            name,
+                            modules.join(", ")
+                        )
+                    };
+                    diagnostics.error(
+                        format!("Function '{}' is not imported. Add: {}", name, suggestion),
+                        call.span,
+                    );
                 }
                 // If function doesn't exist in context, we don't report an error
                 // because the context might be incomplete (e.g., stdlib not loaded)
@@ -2263,7 +2301,8 @@ mod tests {
         let content = "invalid syntax here";
         let ast = parse_content(content);
         let config = DiagnosticsConfig { enabled: false };
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
         assert!(diagnostics.is_empty());
     }
 
@@ -2272,7 +2311,8 @@ mod tests {
         let content = "std main( {}"; // Missing closing paren and return type
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
         assert!(!diagnostics.is_empty());
     }
 
@@ -2281,7 +2321,8 @@ mod tests {
         let content = "std main(): void { return }";
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
         assert!(diagnostics.is_empty());
     }
 
@@ -2297,7 +2338,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         // Should have an error about return with value in subscope
         assert!(!diagnostics.is_empty());
@@ -2315,7 +2357,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         // Subscope without return with value should be ok
         assert!(diagnostics.is_empty());
@@ -2330,7 +2373,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         // Return with value outside subscope should be ok
         assert!(diagnostics.is_empty());
@@ -2344,7 +2388,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -2362,7 +2407,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -2382,7 +2428,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -2406,7 +2453,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -2426,7 +2474,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -2450,7 +2499,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         // Should have errors for duplicate label and ambiguous goto
         assert!(!diagnostics.is_empty());
@@ -2468,7 +2518,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(diagnostics.iter().any(|d| d.message.contains("expects 2")));
@@ -2483,7 +2534,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(diagnostics.iter().any(|d| d.message.contains("expects 2")));
@@ -2501,7 +2553,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(diagnostics.is_empty());
     }
@@ -2518,7 +2571,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(diagnostics.is_empty());
     }
@@ -2532,7 +2586,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -2554,7 +2609,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -2575,7 +2631,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(!diagnostics.is_empty());
         assert!(
@@ -2595,7 +2652,8 @@ mod tests {
         "#;
         let ast = parse_content(content);
         let config = DiagnosticsConfig::default();
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(diagnostics.is_empty());
     }
@@ -2634,12 +2692,12 @@ mod tests {
         // Build macro context
         let macro_context = MacroContext::from_documents(&documents);
 
-        // Should detect the missing import
         let diags = compute_diagnostics_with_context(
             main_content,
             &main_ast,
             &config,
             Some(&macro_context),
+            None,
             None,
         );
         assert!(!diags.is_empty());
@@ -2689,6 +2747,7 @@ mod tests {
             &config,
             Some(&macro_context),
             None,
+            None,
         );
         // Filter to only macro-related errors
         let macro_errors: Vec<_> = diags
@@ -2720,8 +2779,14 @@ mod tests {
         );
 
         let config = DiagnosticsConfig { enabled: true };
-        let diagnostics =
-            compute_diagnostics_with_context(content, &ast, &config, None, Some(&function_ctx));
+        let diagnostics = compute_diagnostics_with_context(
+            content,
+            &ast,
+            &config,
+            None,
+            Some(&function_ctx),
+            None,
+        );
 
         assert!(
             !diagnostics.is_empty(),
@@ -2758,8 +2823,14 @@ mod tests {
         );
 
         let config = DiagnosticsConfig { enabled: true };
-        let diagnostics =
-            compute_diagnostics_with_context(content, &ast, &config, None, Some(&function_ctx));
+        let diagnostics = compute_diagnostics_with_context(
+            content,
+            &ast,
+            &config,
+            None,
+            Some(&function_ctx),
+            None,
+        );
 
         assert!(
             !diagnostics
@@ -2790,8 +2861,14 @@ mod tests {
         );
 
         let config = DiagnosticsConfig { enabled: true };
-        let diagnostics =
-            compute_diagnostics_with_context(content, &ast, &config, None, Some(&function_ctx));
+        let diagnostics = compute_diagnostics_with_context(
+            content,
+            &ast,
+            &config,
+            None,
+            Some(&function_ctx),
+            None,
+        );
 
         // Should get an error about color restriction
         assert!(
@@ -2820,8 +2897,14 @@ mod tests {
         let function_ctx = FunctionContext::new();
 
         let config = DiagnosticsConfig { enabled: true };
-        let diagnostics =
-            compute_diagnostics_with_context(content, &ast, &config, None, Some(&function_ctx));
+        let diagnostics = compute_diagnostics_with_context(
+            content,
+            &ast,
+            &config,
+            None,
+            Some(&function_ctx),
+            Some("file:///main.nx"),
+        );
 
         // Should not report any function import errors
         assert!(
@@ -2843,7 +2926,8 @@ mod tests {
         let ast = parse_content(content);
 
         let config = DiagnosticsConfig { enabled: true };
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(
             diagnostics
@@ -2866,7 +2950,8 @@ mod tests {
         let ast = parse_content(content);
 
         let config = DiagnosticsConfig { enabled: true };
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(
             !diagnostics
@@ -2889,7 +2974,8 @@ mod tests {
         let ast = parse_content(content);
 
         let config = DiagnosticsConfig { enabled: true };
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(
             !diagnostics
@@ -2910,7 +2996,8 @@ mod tests {
         let ast = parse_content(content);
 
         let config = DiagnosticsConfig { enabled: true };
-        let diagnostics = compute_diagnostics_with_context(content, &ast, &config, None, None);
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
         assert!(
             diagnostics
@@ -2945,13 +3032,130 @@ mod tests {
 
         let macro_context = MacroContext::from_documents(&documents);
 
-        let diags =
-            compute_diagnostics_with_context(content, &ast, &config, Some(&macro_context), None);
+        let diags = compute_diagnostics_with_context(
+            content,
+            &ast,
+            &config,
+            Some(&macro_context),
+            None,
+            Some("file:///main.nx"),
+        );
         // Should not report any macro import errors
         let macro_errors: Vec<_> = diags
             .iter()
             .filter(|d| d.message.contains("not imported"))
             .collect();
         assert!(macro_errors.is_empty());
+    }
+
+    #[test]
+    fn test_same_module_function_no_import_needed() {
+        // Test that functions in the same module (same directory) don't require imports
+        let config = DiagnosticsConfig::default();
+
+        // File 1: defines fib_iterative
+        let file1_content = r#"
+            std fib_iterative(i64 n): i64 {
+                return n
+            }
+        "#;
+        let file1_ast = parse_content(file1_content);
+
+        // File 2: calls fib_iterative (same directory, same module)
+        let file2_content = r#"
+            std main(): void {
+                m x = fib_iterative(10)
+            }
+        "#;
+        let file2_ast = parse_content(file2_content);
+
+        // Build documents map with both files in the same directory
+        let mut documents: HashMap<String, (String, Option<Program>)> = HashMap::new();
+        documents.insert(
+            "file:///D:/Code/Rust/nexus/examples/iterative/iterative.nx".to_string(),
+            (file1_content.to_string(), file1_ast),
+        );
+        documents.insert(
+            "file:///D:/Code/Rust/nexus/examples/iterative/main.nx".to_string(),
+            (file2_content.to_string(), file2_ast.clone()),
+        );
+
+        let function_context = FunctionContext::from_documents(&documents);
+
+        let diags = compute_diagnostics_with_context(
+            file2_content,
+            &file2_ast,
+            &config,
+            None,
+            Some(&function_context),
+            Some("file:///D:/Code/Rust/nexus/examples/iterative/main.nx"),
+        );
+
+        // Should NOT report any function import errors for fib_iterative
+        // because it's defined in the same module (same directory)
+        let import_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("not imported") && d.message.contains("fib_iterative"))
+            .collect();
+        assert!(
+            import_errors.is_empty(),
+            "Expected no import error for same-module function, but got: {:?}",
+            import_errors
+        );
+    }
+
+    #[test]
+    fn test_different_module_function_requires_import() {
+        // Test that functions in different modules DO require imports
+        let config = DiagnosticsConfig::default();
+
+        // File 1: defines helper in module A
+        let file1_content = r#"
+            std helper(): i64 {
+                return 42
+            }
+        "#;
+        let file1_ast = parse_content(file1_content);
+
+        // File 2: tries to call helper from module B (different directory)
+        let file2_content = r#"
+            std main(): void {
+                m x = helper()
+            }
+        "#;
+        let file2_ast = parse_content(file2_content);
+
+        // Build documents map with files in different directories
+        let mut documents: HashMap<String, (String, Option<Program>)> = HashMap::new();
+        documents.insert(
+            "file:///D:/Code/Rust/nexus/examples/moduleA/lib.nx".to_string(),
+            (file1_content.to_string(), file1_ast),
+        );
+        documents.insert(
+            "file:///D:/Code/Rust/nexus/examples/moduleB/main.nx".to_string(),
+            (file2_content.to_string(), file2_ast.clone()),
+        );
+
+        let function_context = FunctionContext::from_documents(&documents);
+
+        let diags = compute_diagnostics_with_context(
+            file2_content,
+            &file2_ast,
+            &config,
+            None,
+            Some(&function_context),
+            Some("file:///D:/Code/Rust/nexus/examples/moduleB/main.nx"),
+        );
+
+        // SHOULD report a function import error for helper
+        // because it's defined in a different module (different directory)
+        let import_errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("not imported") && d.message.contains("helper"))
+            .collect();
+        assert!(
+            !import_errors.is_empty(),
+            "Expected import error for different-module function"
+        );
     }
 }
