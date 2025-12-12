@@ -435,6 +435,7 @@ dependencies = [
  "nexus-permissions",
  "nexus-project",
  "nexus-sandbox",
+ "nexus-transpiler-c",
  "nexus-types",
 ]
 
@@ -530,6 +531,20 @@ dependencies = [
 [[package]]
 name = "nexus-test-runner"
 version = "0.1.0"
+
+[[package]]
+name = "nexus-transpiler-c"
+version = "0.1.0"
+dependencies = [
+ "nexus-core",
+ "nexus-interpreter",
+ "nexus-lsp-server",
+ "nexus-parser",
+ "nexus-project",
+ "nexus-types",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "nexus-types"

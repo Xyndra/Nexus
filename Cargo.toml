@@ -18,6 +18,7 @@ members = [
     "crates/nexus-cli",
     "crates/nexus-test-runner",
     "crates/nexus-project",
+    "crates/nexus-transpiler-c",
 ]
 
 [workspace.package]
@@ -35,6 +36,8 @@ nexus-permissions = { path = "crates/nexus-permissions" }
 nexus-interpreter = { path = "crates/nexus-interpreter" }
 nexus-sandbox = { path = "crates/nexus-sandbox" }
 nexus-project = { path = "crates/nexus-project" }
+nexus-lsp-server = { path = "crates/nexus-lsp-server" }
+nexus-transpiler-c = { path = "crates/nexus-transpiler-c" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

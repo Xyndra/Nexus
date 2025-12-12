@@ -9,7 +9,7 @@ mod diagnostics;
 mod document_symbols;
 mod goto_definition;
 mod hover;
-mod macro_expansion;
+pub mod macro_expansion;
 mod types;
 mod utils;
 

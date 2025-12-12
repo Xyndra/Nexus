@@ -1,0 +1,18 @@
+[package]
+name = "nexus-transpiler-c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+nexus-core = { workspace = true }
+nexus-parser = { workspace = true }
+nexus-types = { workspace = true }
+nexus-project = { workspace = true }
+nexus-interpreter = { workspace = true }
+nexus-lsp-server = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

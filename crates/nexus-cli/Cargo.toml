@@ -16,3 +16,4 @@ nexus-permissions.workspace = true
 nexus-interpreter.workspace = true
 nexus-sandbox.workspace = true
 nexus-project.workspace = true
+nexus-transpiler-c.workspace = true

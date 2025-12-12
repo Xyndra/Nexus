@@ -1,4 +1,6 @@
 /target
+**/c_transpile
+output*
 
 # Local LSP binary overrides for Zed extension development
 editors/zed/local-nexus-lsp*

@@ -8,6 +8,7 @@ use nexus_parser::parse;
 use nexus_permissions::{CompatPermission, Permission, PermissionSet, PlatPermission};
 use nexus_project::{ProjectConfig, ResolvedProject, load_and_resolve_project_with_stdlib};
 use nexus_sandbox::Sandbox;
+use nexus_transpiler_c::transpile_project;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -17,7 +18,7 @@ use std::process::ExitCode;
 /// CLI configuration parsed from arguments
 #[derive(Default)]
 struct CliConfig {
-    /// Subcommand (run, test, or none for default behavior)
+    /// Subcommand (run, test, transpile, or none for default behavior)
     subcommand: Option<Subcommand>,
     /// Source file or directory to run
     file: Option<PathBuf>,
@@ -39,12 +40,17 @@ struct CliConfig {
     version: bool,
     /// REPL mode
     repl: bool,
+    /// Transpile target (for transpile subcommand)
+    transpile_target: Option<String>,
+    /// Output directory (for transpile subcommand)
+    output_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
 enum Subcommand {
     Run,
     Test,
+    Transpile,
 }
 
 fn parse_args() -> CliConfig {
@@ -62,6 +68,15 @@ fn parse_args() -> CliConfig {
             "test" => {
                 config.subcommand = Some(Subcommand::Test);
                 i += 1;
+            }
+            "transpile" => {
+                config.subcommand = Some(Subcommand::Transpile);
+                i += 1;
+                // Next argument should be the target
+                if i < args.len() {
+                    config.transpile_target = Some(args[i].clone());
+                    i += 1;
+                }
             }
             _ => {}
         }
@@ -88,6 +103,12 @@ fn parse_args() -> CliConfig {
                 }
             }
             "--repl" | "-i" => config.repl = true,
+            "-o" | "--output" => {
+                i += 1;
+                if i < args.len() {
+                    config.output_dir = Some(PathBuf::from(args[i].clone()));
+                }
+            }
             arg if !arg.starts_with('-') => {
                 config.file = Some(PathBuf::from(arg));
             }
@@ -119,21 +140,26 @@ USAGE:
     nexus [OPTIONS]
     nexus run <FILE_OR_DIR>
     nexus test <FILE_OR_DIR>
+    nexus transpile <TARGET> <PROJECT_DIR> [OPTIONS]
 
 SUBCOMMANDS:
     run <path>              Run a file or directory (for dirs, looks for main.nx)
     test <path>             Run tests for a file or directory
+    transpile <target> <path>
+                            Transpile Nexus code to another language
+                            Targets: c
 
 OPTIONS:
     -h, --help              Show this help message
     -v, --version           Show version information
-    -e, --eval <CODE>       Execute code directly
-    -i, --repl              Start interactive REPL
+    -e, --eval <CODE>       Evaluate code directly
     --ast                   Output AST instead of running
-    --lint                  Lint the code without running
-    --no-bounds-check       Disable array bounds checking
+    --lint                  Check code without running
+    --no-bounds-check       Disable bounds checking
     --sandbox               Run in sandboxed mode
     --max-steps <N>         Maximum execution steps (for sandbox)
+    -i, --repl              Enter interactive mode
+    -o, --output <DIR>      Output directory (for transpile)
 
 EXAMPLES:
     nexus run hello.nx          Run a Nexus file
@@ -768,6 +794,81 @@ fn handle_repl_command(cmd: &str, _interpreter: &Interpreter) {
     }
 }
 
+fn transpile_path(path: &Path, target: &str, config: &CliConfig) -> Result<(), NexusError> {
+    // Validate target
+    if target != "c" {
+        eprintln!(
+            "Error: Unknown transpile target '{}'. Supported targets: c",
+            target
+        );
+        return Err(NexusError::TranspileError {
+            message: format!("Unknown transpile target: {}", target),
+        });
+    }
+
+    // Determine output directory
+    let output_dir = config
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // Create output directory if it doesn't exist
+    if !output_dir.exists() {
+        fs::create_dir_all(&output_dir).map_err(|e| NexusError::IoError {
+            message: format!("Failed to create output directory: {}", e),
+        })?;
+    }
+
+    println!("Transpiling Nexus project to C...");
+    println!("  Project: {}", path.display());
+    println!("  Output:  {}", output_dir.display());
+
+    // Transpile the project
+    let result = transpile_project(path, &output_dir)?;
+
+    // Write runtime files
+    let runtime_h_path = output_dir.join("nexus_core.h");
+    let runtime_c_path = output_dir.join("nexus_core.c");
+
+    let runtime_h = nexus_transpiler_c::runtime::RUNTIME_HEADER;
+    let _runtime_c = nexus_transpiler_c::runtime::generate_runtime(
+        &nexus_transpiler_c::TranspilerConfig::default(),
+    );
+
+    fs::write(&runtime_h_path, runtime_h).map_err(|e| NexusError::IoError {
+        message: format!("Failed to write nexus_core.h: {}", e),
+    })?;
+
+    fs::write(&runtime_c_path, &result.runtime).map_err(|e| NexusError::IoError {
+        message: format!("Failed to write nexus_core.c: {}", e),
+    })?;
+
+    println!("  Generated: nexus_core.h");
+    println!("  Generated: nexus_core.c");
+
+    // Write transpiled files
+    for (file_path, content) in &result.files {
+        let output_path = output_dir.join(file_path.file_name().unwrap());
+        fs::write(&output_path, content).map_err(|e| NexusError::IoError {
+            message: format!("Failed to write {}: {}", output_path.display(), e),
+        })?;
+        println!(
+            "  Generated: {}",
+            output_path.file_name().unwrap().to_string_lossy()
+        );
+    }
+
+    println!("\nTranspilation complete!");
+    println!("\nTo compile the generated C code:");
+    println!(
+        "  cc -o program {}/nexus_core.c {}/*.nx.c",
+        output_dir.display(),
+        output_dir.display()
+    );
+
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let config = parse_args();
 
@@ -797,6 +898,25 @@ fn main() -> ExitCode {
                 eprintln!("Error: 'test' subcommand requires a file or directory path");
                 return ExitCode::FAILURE;
             }
+        }
+        Some(Subcommand::Transpile) => {
+            let target = match &config.transpile_target {
+                Some(t) => t.as_str(),
+                None => {
+                    eprintln!("Error: 'transpile' subcommand requires a target (e.g., 'c')");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            let path = match &config.file {
+                Some(p) => p,
+                None => {
+                    eprintln!("Error: 'transpile' subcommand requires a project directory");
+                    return ExitCode::FAILURE;
+                }
+            };
+
+            transpile_path(path, target, &config)
         }
         None => {
             if let Some(code) = &config.eval {

@@ -142,6 +142,10 @@ pub enum NexusError {
     #[error("IO error: {message}")]
     IoError { message: String },
 
+    // === Transpile Errors ===
+    #[error("Transpile error: {message}")]
+    TranspileError { message: String },
+
     // === Sandbox Errors ===
     #[error("Sandbox violation: {message}")]
     SandboxViolation { message: String, span: Option<Span> },
@@ -185,6 +189,7 @@ impl NexusError {
             NexusError::CircularDependency { span, .. } => Some(span),
             NexusError::UnderscorePrefixWarning { span, .. } => Some(span),
             NexusError::IoError { .. } => None,
+            NexusError::TranspileError { .. } => None,
             NexusError::SandboxViolation { span, .. } => span.as_ref(),
             NexusError::InternalError { .. } => None,
         }

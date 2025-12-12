@@ -28,6 +28,6 @@ compat main(): void {
     println(math_result)
 }
 
-std abc(): void {
+compat abc(): void {
     println("Hello, World!")
 }
