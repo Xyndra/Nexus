@@ -15,10 +15,11 @@ mod utils;
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use nexus_core::Diagnostics;
 use nexus_parser::{Program, parse};
+use nexus_project::{ResolvedProject, load_and_resolve_project_with_stdlib};
 use nexus_types::TypeRegistry;
 
 // Re-export public types
@@ -71,6 +72,8 @@ pub struct Lsp {
     diagnostics: HashMap<String, Diagnostics>,
     /// Configuration
     config: LspConfig,
+    /// Resolved projects per workspace root (project_root_path -> ResolvedProject)
+    projects: HashMap<PathBuf, ResolvedProject>,
 }
 
 impl Lsp {
@@ -81,6 +84,7 @@ impl Lsp {
             type_registry: TypeRegistry::new(),
             diagnostics: HashMap::new(),
             config: LspConfig::default(),
+            projects: HashMap::new(),
         }
     }
 
@@ -91,6 +95,74 @@ impl Lsp {
             type_registry: TypeRegistry::new(),
             diagnostics: HashMap::new(),
             config,
+            projects: HashMap::new(),
+        }
+    }
+
+    /// Find the project root by walking up from the given file path until we find nexus.json5
+    fn find_project_root(&self, file_path: &Path) -> Option<PathBuf> {
+        let mut current = file_path.parent()?;
+
+        loop {
+            let config_path = current.join("nexus.json5");
+            if config_path.exists() {
+                return Some(current.to_path_buf());
+            }
+
+            current = current.parent()?;
+        }
+    }
+
+    /// Resolve and cache a project for the given root directory
+    fn resolve_project(&mut self, project_root: &Path) -> Option<&ResolvedProject> {
+        // Check if already cached
+        if self.projects.contains_key(project_root) {
+            return self.projects.get(project_root);
+        }
+
+        // Try to resolve the project
+        match load_and_resolve_project_with_stdlib(project_root) {
+            Ok(resolved) => {
+                self.projects.insert(project_root.to_path_buf(), resolved);
+                self.projects.get(project_root)
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Load all files from the resolved project into the documents map
+    fn load_project_files(&mut self, project: &ResolvedProject) {
+        for module_source in &project.sources {
+            // For each file in the module, load it as a document
+            for file_path in &module_source.files {
+                if let Ok(content) = fs::read_to_string(file_path) {
+                    let ast = parse(&content).ok();
+
+                    // Convert path to URI
+                    let mut path_str = file_path.display().to_string();
+
+                    // Remove Windows extended path prefix if present
+                    if path_str.starts_with(r"\\?\") {
+                        path_str = path_str[4..].to_string();
+                    }
+
+                    // Normalize path separators
+                    path_str = path_str.replace('\\', "/");
+
+                    // Create proper file URI
+                    let file_uri = format!("file:///{}", path_str);
+
+                    // Only add if not already present (don't override opened documents)
+                    self.documents
+                        .entry(file_uri.clone())
+                        .or_insert_with(|| Document {
+                            uri: file_uri.clone(),
+                            content,
+                            ast,
+                            version: 0,
+                        });
+                }
+            }
         }
     }
 
@@ -165,6 +237,44 @@ impl Lsp {
         };
 
         self.documents.insert(uri.to_string(), doc);
+
+        // Try to resolve project and load all its files
+        // Extract path from URI
+        let path = uri
+            .strip_prefix("file:///")
+            .or_else(|| uri.strip_prefix("file://"))
+            .unwrap_or(uri);
+
+        // Remove Windows extended path prefix if present
+        let path = if let Some(p) = path.strip_prefix(r"\\?\") {
+            p
+        } else {
+            path
+        };
+
+        let file_path = PathBuf::from(path);
+
+        // Find and resolve the project
+        if let Some(project_root) = self.find_project_root(&file_path) {
+            if let Some(project) = self.resolve_project(&project_root) {
+                // Clone the project to avoid borrow checker issues
+                let project_clone = project.clone();
+                self.load_project_files(&project_clone);
+            }
+        } else {
+            // No project found, fall back to loading module files from the same directory
+            let module_files = self.load_module_files(uri);
+            for (file_uri, (file_content, file_ast)) in module_files {
+                self.documents
+                    .entry(file_uri.clone())
+                    .or_insert_with(|| Document {
+                        uri: file_uri.clone(),
+                        content: file_content,
+                        ast: file_ast,
+                        version: 0,
+                    });
+            }
+        }
 
         // Compute diagnostics with macro context from all documents
         self.recompute_diagnostics(uri);
