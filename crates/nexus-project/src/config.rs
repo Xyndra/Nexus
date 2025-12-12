@@ -248,6 +248,6 @@ mod tests {
             Some(&vec!["main".to_string(), "utils".to_string()])
         );
         assert_eq!(map.get("plat"), Some(&vec!["native".to_string()]));
-        assert!(map.get("compat.fs").is_none());
+        assert!(!map.contains_key("compat.fs"));
     }
 }

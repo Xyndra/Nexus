@@ -5,8 +5,9 @@
 //!
 //! The test runner executes programs via the CLI binary to ensure reliable output capture.
 
+use nexus_transpiler_c::{CTranspiler, TranspilerConfig};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Result of running a single sample test
@@ -28,6 +29,23 @@ pub struct TestResult {
     pub error: Option<String>,
     /// Diff between expected and actual (if different)
     pub diff: Option<String>,
+    /// C transpiler test result (if enabled)
+    pub c_result: Option<CTestResult>,
+}
+
+/// Result of C transpiler test
+#[derive(Debug, Clone)]
+pub struct CTestResult {
+    /// Whether C transpiler test passed
+    pub passed: bool,
+    /// Output from C-compiled binary
+    pub c_output: String,
+    /// Compiler used (tcc, gcc, clang, or error message)
+    pub compiler: String,
+    /// Error message if C test failed
+    pub error: Option<String>,
+    /// Diff between interpreter and C output (if different)
+    pub diff: Option<String>,
 }
 
 impl TestResult {
@@ -47,6 +65,7 @@ impl TestResult {
             expected_output: output,
             error: None,
             diff: None,
+            c_result: None,
         }
     }
 
@@ -68,6 +87,7 @@ impl TestResult {
             expected_output: expected,
             error: None,
             diff: Some(diff),
+            c_result: None,
         }
     }
 
@@ -87,6 +107,7 @@ impl TestResult {
             expected_output: String::new(),
             error: Some(error),
             diff: None,
+            c_result: None,
         }
     }
 }
@@ -160,6 +181,8 @@ pub struct TestRunnerConfig {
     pub filter: Option<String>,
     /// Whether to show verbose output
     pub verbose: bool,
+    /// Whether to test C transpiler as well
+    pub test_c_transpiler: bool,
 }
 
 impl TestRunnerConfig {
@@ -171,6 +194,7 @@ impl TestRunnerConfig {
             update_snapshots: false,
             filter: None,
             verbose: false,
+            test_c_transpiler: false,
         }
     }
 
@@ -195,6 +219,12 @@ impl TestRunnerConfig {
     /// Set verbose mode
     pub fn verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
+        self
+    }
+
+    /// Set whether to test C transpiler
+    pub fn test_c_transpiler(mut self, test: bool) -> Self {
+        self.test_c_transpiler = test;
         self
     }
 }
@@ -302,12 +332,14 @@ impl TestRunner {
 
                 let source_path = path.join("main.nx");
                 let expected_path = path.join("expected.out");
+                let config_path = path.join("nexus.json5");
 
                 if source_path.exists() && expected_path.exists() {
                     samples.push(Sample {
                         name,
                         source_path,
                         expected_path,
+                        is_project: config_path.exists(),
                     });
                 } else if self.config.verbose {
                     if !source_path.exists() {
@@ -339,7 +371,17 @@ impl TestRunner {
         };
 
         // Run the program via CLI
-        let actual = match self.run_via_cli(&sample.source_path) {
+        // For projects with nexus.json5, pass the directory; otherwise pass the file
+        let run_path = if sample.is_project {
+            sample
+                .source_path
+                .parent()
+                .unwrap_or(&sample.source_path)
+                .to_path_buf()
+        } else {
+            sample.source_path.clone()
+        };
+        let actual = match self.run_via_cli(&run_path) {
             Ok(output) => output,
             Err(e) => {
                 return TestResult::error(
@@ -355,22 +397,235 @@ impl TestRunner {
         let actual_normalized = normalize_output(&actual);
         let expected_normalized = normalize_output(&expected);
 
-        if actual_normalized == expected_normalized {
+        let mut result = if actual_normalized == expected_normalized {
             TestResult::passed(
                 sample.name.clone(),
                 sample.source_path.clone(),
                 sample.expected_path.clone(),
-                actual,
+                actual.clone(),
             )
         } else {
             TestResult::mismatch(
                 sample.name.clone(),
                 sample.source_path.clone(),
                 sample.expected_path.clone(),
-                actual,
+                actual.clone(),
                 expected,
             )
+        };
+
+        // Run C transpiler test if enabled
+        if self.config.test_c_transpiler {
+            result.c_result = self.run_c_transpiler_test(sample, &actual);
         }
+
+        result
+    }
+
+    /// Test the C transpiler by transpiling, compiling, and running
+    fn run_c_transpiler_test(
+        &self,
+        sample: &Sample,
+        interpreter_output: &str,
+    ) -> Option<CTestResult> {
+        // Get the project directory (parent of main.nx)
+        let project_dir = sample.source_path.parent()?;
+
+        // Create a temporary directory for C output
+        let temp_dir = project_dir.join("c_transpile");
+        if temp_dir.exists() {
+            // Try to clean up, but don't fail if we can't (Windows file locking issues)
+            let _ = fs::remove_dir_all(&temp_dir);
+        }
+        if let Err(e) = fs::create_dir_all(&temp_dir) {
+            return Some(CTestResult {
+                passed: false,
+                c_output: String::new(),
+                compiler: "setup".to_string(),
+                error: Some(format!("Failed to create temp directory: {}", e)),
+                diff: None,
+            });
+        }
+
+        // Transpile to C
+        let config = TranspilerConfig {
+            output_dir: temp_dir.clone(),
+            ..Default::default()
+        };
+        let mut transpiler = CTranspiler::with_config(config);
+        let transpile_result = match transpiler.transpile_project(project_dir) {
+            Ok(r) => r,
+            Err(e) => {
+                return Some(CTestResult {
+                    passed: false,
+                    c_output: String::new(),
+                    compiler: "transpiler".to_string(),
+                    error: Some(format!("Transpilation failed: {}", e)),
+                    diff: None,
+                });
+            }
+        };
+
+        // Write the C files
+        for (path, content) in &transpile_result.files {
+            if let Err(e) = fs::write(path, content) {
+                return Some(CTestResult {
+                    passed: false,
+                    c_output: String::new(),
+                    compiler: "write".to_string(),
+                    error: Some(format!("Failed to write C file {}: {}", path.display(), e)),
+                    diff: None,
+                });
+            }
+        }
+
+        // Write runtime files
+        let runtime_h_path = temp_dir.join("nexus_runtime.h");
+        let runtime_c_path = temp_dir.join("nexus_runtime.c");
+        if let Err(e) = fs::write(&runtime_h_path, nexus_transpiler_c::RUNTIME_HEADER) {
+            return Some(CTestResult {
+                passed: false,
+                c_output: String::new(),
+                compiler: "write".to_string(),
+                error: Some(format!("Failed to write runtime header: {}", e)),
+                diff: None,
+            });
+        }
+        if let Err(e) = fs::write(&runtime_c_path, &transpile_result.runtime) {
+            return Some(CTestResult {
+                passed: false,
+                c_output: String::new(),
+                compiler: "write".to_string(),
+                error: Some(format!("Failed to write runtime: {}", e)),
+                diff: None,
+            });
+        }
+
+        // Try to compile and run with available C compiler
+        match self.try_compile_and_run(&temp_dir, &transpile_result, interpreter_output) {
+            Ok(result) => Some(result),
+            Err(e) => Some(CTestResult {
+                passed: false,
+                c_output: String::new(),
+                compiler: "none".to_string(),
+                error: Some(e),
+                diff: None,
+            }),
+        }
+    }
+
+    /// Try to compile and run the C code with available compilers
+    fn try_compile_and_run(
+        &self,
+        temp_dir: &Path,
+        transpile_result: &nexus_transpiler_c::TranspileResult,
+        interpreter_output: &str,
+    ) -> Result<CTestResult, String> {
+        // Collect all C source files
+        let mut c_files: Vec<PathBuf> = transpile_result.files.keys().cloned().collect();
+        c_files.push(temp_dir.join("nexus_runtime.c"));
+
+        // Output executable
+        let exe_name = if cfg!(windows) {
+            "program.exe"
+        } else {
+            "program"
+        };
+        let exe_path = temp_dir.join(exe_name);
+
+        // Try compilers in order: clang, gcc, tcc
+        let compilers = ["clang", "gcc", "tcc"];
+
+        for compiler in &compilers {
+            // Check if compiler exists
+            let check = Command::new(compiler)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+
+            if check.is_err() {
+                println!("Compiler {} not found", compiler);
+                continue; // Compiler not available
+            }
+
+            if self.config.verbose {
+                println!("  Trying to compile with {}...", compiler);
+            }
+
+            // Compile
+            let mut cmd = Command::new(compiler);
+            cmd.current_dir(temp_dir);
+
+            for c_file in &c_files {
+                cmd.arg(c_file.file_name().unwrap());
+            }
+
+            cmd.arg("-o").arg(&exe_path);
+            cmd.arg("-lm"); // Link math library
+
+            let compile_output = cmd
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(|e| format!("Failed to run {}: {}", compiler, e))?;
+
+            if !compile_output.status.success() {
+                let stderr = String::from_utf8_lossy(&compile_output.stderr);
+                if self.config.verbose {
+                    println!("  {} compilation failed: {}", compiler, stderr);
+                }
+                continue; // Try next compiler
+            }
+
+            // Run the compiled program
+            let run_output = Command::new(&exe_path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(|e| format!("Failed to run compiled program: {}", e))?;
+
+            if !run_output.status.success() {
+                let stderr = String::from_utf8_lossy(&run_output.stderr);
+                return Ok(CTestResult {
+                    passed: false,
+                    c_output: String::new(),
+                    compiler: compiler.to_string(),
+                    error: Some(format!("Program execution failed: {}", stderr)),
+                    diff: None,
+                });
+            }
+
+            let c_output = String::from_utf8_lossy(&run_output.stdout).to_string();
+
+            // Compare outputs
+            let c_normalized = normalize_output(&c_output);
+            let interpreter_normalized = normalize_output(interpreter_output);
+
+            if c_normalized == interpreter_normalized {
+                return Ok(CTestResult {
+                    passed: true,
+                    c_output,
+                    compiler: compiler.to_string(),
+                    error: None,
+                    diff: None,
+                });
+            } else {
+                let diff = compute_diff(&interpreter_normalized, &c_normalized);
+                return Ok(CTestResult {
+                    passed: false,
+                    c_output,
+                    compiler: compiler.to_string(),
+                    error: Some("Output mismatch between interpreter and C".to_string()),
+                    diff: Some(diff),
+                });
+            }
+        }
+
+        Err(
+            "No C compiler found (checked: tcc, gcc, clang). Install one to test C transpiler."
+                .to_string(),
+        )
     }
 
     /// Run a Nexus program via the CLI binary
@@ -378,6 +633,7 @@ impl TestRunner {
         let output = if let Some(ref binary) = self.config.cli_binary {
             // Use the specified binary
             Command::new(binary)
+                .arg("run")
                 .arg(source_path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -393,7 +649,7 @@ impl TestRunner {
 
             Command::new("cargo")
                 .current_dir(workspace_root)
-                .args(["run", "-q", "-p", "nexus-cli", "--"])
+                .args(["run", "-q", "-p", "nexus-cli", "--", "run"])
                 .arg(source_path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -416,12 +672,13 @@ impl TestRunner {
     /// Print a test result
     fn print_result(&self, result: &TestResult) {
         if result.passed {
-            println!("✓ {}", result.name);
+            print!("✓ {}", result.name);
         } else if let Some(ref error) = result.error {
-            println!("✗ {} - ERROR: {}", result.name, error);
+            print!("✗ {} - ERROR: {}", result.name, error);
         } else {
-            println!("✗ {} - OUTPUT MISMATCH", result.name);
+            print!("✗ {} - OUTPUT MISMATCH", result.name);
             if let Some(ref diff) = result.diff {
+                println!();
                 for line in diff.lines().take(20) {
                     println!("  {}", line);
                 }
@@ -430,6 +687,29 @@ impl TestRunner {
                     println!("  ... ({} more lines)", line_count - 20);
                 }
             }
+        }
+
+        // Print C transpiler result
+        if let Some(ref c_result) = result.c_result {
+            if c_result.passed {
+                println!(" [C: ✓ with {}]", c_result.compiler);
+            } else if let Some(ref error) = c_result.error {
+                println!(" [C: ⚠ {}]", error);
+                if self.config.verbose && error.contains("mismatch") {
+                    if let Some(ref diff) = c_result.diff {
+                        println!("  C Transpiler Diff (Interpreter vs C):");
+                        for line in diff.lines().take(15) {
+                            println!("    {}", line);
+                        }
+                    }
+                }
+            }
+        } else if !result.passed {
+            println!();
+        }
+
+        if result.passed && result.c_result.is_none() {
+            println!();
         }
     }
 
@@ -458,6 +738,14 @@ impl TestRunner {
                             println!("    {}", line);
                         }
                     }
+                    // Show C transpiler errors
+                    if let Some(ref c_result) = result.c_result {
+                        if !c_result.passed {
+                            if let Some(ref error) = c_result.error {
+                                println!("    C Transpiler: {}", error);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -470,6 +758,7 @@ struct Sample {
     name: String,
     source_path: PathBuf,
     expected_path: PathBuf,
+    is_project: bool,
 }
 
 /// Normalize output for comparison (handle line endings)
@@ -632,12 +921,14 @@ mod tests {
             .verbose(true)
             .filter("hello")
             .update_snapshots(true)
-            .cli_binary("/usr/bin/nexus");
+            .cli_binary("/usr/bin/nexus")
+            .test_c_transpiler(true);
 
         assert_eq!(config.samples_dir, PathBuf::from("samples"));
         assert!(config.verbose);
         assert_eq!(config.filter, Some("hello".to_string()));
         assert!(config.update_snapshots);
         assert_eq!(config.cli_binary, Some(PathBuf::from("/usr/bin/nexus")));
+        assert!(config.test_c_transpiler);
     }
 }

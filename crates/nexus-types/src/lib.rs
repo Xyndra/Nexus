@@ -218,6 +218,15 @@ impl TypeRegistry {
     pub fn resolve_type(&self, ty: &NexusType) -> NexusType {
         match ty {
             NexusType::Named(name) => {
+                // Handle "str" as an alias for [dyn]rune
+                if name == "str" {
+                    return NexusType::Array(ArrayType {
+                        element_type: Box::new(NexusType::Primitive(PrimitiveType::Rune)),
+                        size: ArraySize::Dynamic,
+                        prealloc: None,
+                    });
+                }
+
                 if let Some(s) = self.get_struct(name) {
                     NexusType::Struct(s)
                 } else if let Some(i) = self.get_interface(name) {

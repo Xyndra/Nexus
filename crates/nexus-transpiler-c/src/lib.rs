@@ -79,10 +79,37 @@ impl CTranspiler {
         // Collect all programs for cross-module macro expansion
         let all_programs: Vec<&Program> = typed_programs.values().collect();
 
+        // Collect module info for cross-module references
+        let all_module_info: Vec<(String, &Program)> = resolved
+            .sources
+            .iter()
+            .filter_map(|source| {
+                typed_programs
+                    .get(&source.path)
+                    .map(|prog| (source.name.clone(), prog))
+            })
+            .collect();
+
         // Generate C code for each module
         let mut files = HashMap::new();
+        let project_module_name = &resolved.config.module_name;
         for (module_path, program) in typed_programs.iter() {
-            let c_code = self.generate_c_code(program, module_path, &all_programs)?;
+            let module_name = resolved
+                .sources
+                .iter()
+                .find(|s| s.path == *module_path)
+                .map(|s| s.name.as_str())
+                .unwrap_or("unknown");
+            // Root module is the one whose name matches the project module_name
+            let is_root_module = module_name == project_module_name;
+            let c_code = self.generate_c_code(
+                program,
+                module_path,
+                module_name,
+                &all_programs,
+                &all_module_info,
+                is_root_module,
+            )?;
             let output_path = self.get_output_path(module_path);
             files.insert(output_path, c_code);
         }
@@ -100,6 +127,7 @@ impl CTranspiler {
     ) -> NexusResult<HashMap<PathBuf, Program>> {
         let mut typechecker = TypeChecker::new(type_registry);
         let mut typed_programs = HashMap::new();
+        let mut module_names = HashMap::new();
 
         // First, parse all modules
         for module_source in &resolved.sources {
@@ -112,7 +140,14 @@ impl CTranspiler {
             typechecker.register_types(&program)?;
 
             let module_path = module_source.path.clone();
+            module_names.insert(module_path.clone(), module_source.name.clone());
             typed_programs.insert(module_path, program);
+        }
+
+        // Register all functions and methods from all modules
+        for (module_path, program) in typed_programs.iter() {
+            let module_name = module_names.get(module_path).unwrap();
+            typechecker.register_functions(program, module_name)?;
         }
 
         // Then type check all modules
@@ -128,10 +163,20 @@ impl CTranspiler {
         &self,
         program: &Program,
         module_path: &Path,
+        module_name: &str,
         all_programs: &[&Program],
+        all_module_info: &[(String, &Program)],
+        is_root_module: bool,
     ) -> NexusResult<String> {
         let mut generator = CCodeGenerator::new(&self.config, &self.type_registry);
-        generator.generate(program, module_path, all_programs)
+        generator.generate(
+            program,
+            module_path,
+            module_name,
+            all_programs,
+            all_module_info,
+            is_root_module,
+        )
     }
 
     /// Get the output path for a module
@@ -169,7 +214,7 @@ mod tests {
     #[test]
     fn test_transpiler_creation() {
         let transpiler = CTranspiler::new();
-        assert_eq!(transpiler.config.bounds_checking, true);
+        assert!(transpiler.config.bounds_checking);
     }
 
     #[test]
@@ -185,7 +230,14 @@ mod tests {
         let type_registry = TypeRegistry::new();
         let mut generator = CCodeGenerator::new(&config, &type_registry);
 
-        let result = generator.generate(&program, Path::new("test.nx"), &[]);
+        let result = generator.generate(
+            &program,
+            Path::new("test.nx"),
+            "test",
+            &[&program],
+            &[],
+            true,
+        );
         assert!(result.is_ok());
     }
 }

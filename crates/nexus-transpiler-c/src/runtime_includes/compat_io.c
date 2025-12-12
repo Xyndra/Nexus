@@ -38,7 +38,15 @@ static void nx_print_value(nx_value* val) {
             }
             break;
         case NX_TYPE_ARRAY:
-            printf("[array]");
+            if (val->data.as_array != NULL) {
+                nx_string arr_str = nx_string_from_value(*val);
+                char* cstr = nx_string_to_cstr(&arr_str);
+                printf("%s", cstr);
+                nx_free(cstr);
+                nx_string_free(&arr_str);
+            } else {
+                printf("[]");
+            }
             break;
         default:
             printf("[unknown]");

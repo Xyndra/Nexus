@@ -7,7 +7,7 @@ use nexus_interpreter::{BuiltinRegistry, Interpreter};
 use nexus_lsp_server::macro_expansion::MacroExpansionContext;
 use nexus_parser::*;
 use nexus_types::{ArraySize, NexusType, PrimitiveType, TypeRegistry};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::TranspilerConfig;
@@ -24,6 +24,14 @@ pub struct CCodeGenerator<'a> {
     function_impls: Vec<String>,
     current_function_color: Option<FunctionColor>,
     temp_var_counter: usize,
+    /// Mapping from function name to module-qualified name
+    function_to_module: HashMap<String, String>,
+    /// Mapping from (module_name, function_name) to qualified name for disambiguation
+    module_function_map: HashMap<(String, String), String>,
+    /// Mapping from function name to return type
+    function_return_types: HashMap<String, String>,
+    /// Current module being generated
+    current_module: String,
     builtins: BuiltinRegistry,
     interpreter: Option<Interpreter>,
     subscope_depth: usize,
@@ -45,6 +53,10 @@ impl<'a> CCodeGenerator<'a> {
             function_impls: Vec::new(),
             current_function_color: None,
             temp_var_counter: 0,
+            function_to_module: HashMap::new(),
+            module_function_map: HashMap::new(),
+            function_return_types: HashMap::new(),
+            current_module: String::new(),
             builtins: BuiltinRegistry::new(),
             interpreter: None,
             subscope_depth: 0,
@@ -71,8 +83,15 @@ impl<'a> CCodeGenerator<'a> {
         &mut self,
         program: &Program,
         module_path: &Path,
+        module_name: &str,
         all_programs: &[&Program],
+        all_module_info: &[(String, &Program)],
+        is_root_module: bool,
     ) -> NexusResult<String> {
+        // Store module name for later use in C main generation
+        let module_name_for_main = module_name.to_string();
+        // Track current module for function call resolution
+        self.current_module = module_name.to_string();
         // Add standard includes
         self.includes.insert("stdint.h".to_string());
         self.includes.insert("stdbool.h".to_string());
@@ -90,15 +109,39 @@ impl<'a> CCodeGenerator<'a> {
             all_programs.iter().copied(),
         ));
 
-        // Generate forward declarations and implementations
-        let mut has_main = false;
+        // Generate forward declarations for ALL functions from ALL modules
+        // and populate function_to_module mapping
+        for (other_module_name, other_program) in all_module_info {
+            for item in &other_program.items {
+                if let Item::Function(func) = item {
+                    self.generate_function_forward_decl(func, other_module_name)?;
+                    // Store mapping from function name to module-qualified name
+                    // Always qualify, even main functions
+                    let qualified_name =
+                        format!("{}_{}", other_module_name.replace(".", "_"), func.name);
+                    self.function_to_module
+                        .insert(func.name.clone(), qualified_name.clone());
+
+                    // Store per-module mapping for disambiguation
+                    self.module_function_map.insert(
+                        (other_module_name.clone(), func.name.clone()),
+                        qualified_name.clone(),
+                    );
+
+                    // Store return type for type inference
+                    let return_type =
+                        self.nexus_type_to_c(&self.resolve_type_expr(&func.return_type))?;
+                    self.function_return_types
+                        .insert(qualified_name, return_type);
+                }
+            }
+        }
+
+        // Generate implementations for THIS module
         for item in &program.items {
             match item {
                 Item::Function(func) => {
-                    if func.name == "main" {
-                        has_main = true;
-                    }
-                    self.generate_function(func)?;
+                    self.generate_function_impl(func, module_name)?;
                 }
                 Item::Method(method) => self.generate_method(method)?,
                 Item::Struct(struct_def) => self.generate_struct(struct_def)?,
@@ -114,9 +157,9 @@ impl<'a> CCodeGenerator<'a> {
             }
         }
 
-        // Add C main entry point if main function exists
-        if has_main {
-            self.generate_c_main();
+        // Add C main entry point if this is the root module
+        if is_root_module {
+            self.generate_c_main(&module_name_for_main);
         }
 
         // Build final output
@@ -187,15 +230,54 @@ impl<'a> CCodeGenerator<'a> {
         Ok(())
     }
 
-    /// Generate a function
-    fn generate_function(&mut self, func: &FunctionDef) -> NexusResult<()> {
+    /// Generate a function forward declaration
+    fn generate_function_forward_decl(
+        &mut self,
+        func: &FunctionDef,
+        module_name: &str,
+    ) -> NexusResult<()> {
+        let return_type = self.nexus_type_to_c(&self.resolve_type_expr(&func.return_type))?;
+
+        // Always use module-qualified names for all functions
+        let func_name = format!("{}_{}", module_name.replace(".", "_"), func.name);
+        let mut sig = format!("{} nx_{}", return_type, func_name);
+        sig.push('(');
+
+        if func.params.is_empty() {
+            sig.push_str("void");
+        } else {
+            let params: Vec<String> = func
+                .params
+                .iter()
+                .map(|p| {
+                    let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&p.ty))?;
+                    Ok(format!("{} {}", c_type, self.sanitize_identifier(&p.name)))
+                })
+                .collect::<NexusResult<Vec<_>>>()?;
+            sig.push_str(&params.join(", "));
+        }
+
+        sig.push(')');
+        self.forward_decls.push(format!("{};\n", sig));
+        Ok(())
+    }
+
+    /// Generate a function implementation
+    fn generate_function_impl(&mut self, func: &FunctionDef, module_name: &str) -> NexusResult<()> {
         self.current_function_color = Some(func.color);
         self.temp_var_counter = 0;
 
-        let return_type = self.nexus_type_to_c(&self.resolve_type_expr(&func.return_type))?;
+        // Clear and populate variable types for this function's parameters
+        self.variable_types.clear();
+        for param in &func.params {
+            let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&param.ty))?;
+            self.variable_types.insert(param.name.clone(), c_type);
+        }
 
-        // Generate function signature
-        let mut sig = format!("{} {}", return_type, self.mangle_function_name(&func.name));
+        // Always use module-qualified names for all functions
+        let return_type = self.nexus_type_to_c(&self.resolve_type_expr(&func.return_type))?;
+        let func_name = format!("{}_{}", module_name.replace(".", "_"), func.name);
+        let mut sig = format!("{} nx_{}", return_type, func_name);
         sig.push('(');
 
         if func.params.is_empty() {
@@ -214,9 +296,6 @@ impl<'a> CCodeGenerator<'a> {
 
         sig.push(')');
 
-        // Add forward declaration
-        self.forward_decls.push(format!("{};\n", sig));
-
         // Generate function body
         let mut func_impl = format!("{} {{\n", sig);
 
@@ -232,16 +311,20 @@ impl<'a> CCodeGenerator<'a> {
         Ok(())
     }
 
-    /// Generate C main entry point
-    fn generate_c_main(&mut self) {
-        let main_impl = r#"// C entry point
-int main(int argc, char** argv) {
+    /// Generate C main entry point that calls the root module's main
+    fn generate_c_main(&mut self, root_module_name: &str) {
+        let qualified_main = format!("nx_{}_main", root_module_name.replace(".", "_"));
+        let main_impl = format!(
+            r#"// C entry point
+int main(int argc, char** argv) {{
     nx_init_args(argc, argv);
-    nx_main();
+    {}();
     return 0;
-}
-"#;
-        self.function_impls.push(main_impl.to_string());
+}}
+"#,
+            qualified_main
+        );
+        self.function_impls.push(main_impl);
     }
 
     /// Generate a method
@@ -606,18 +689,28 @@ int main(int argc, char** argv) {
             return self.generate_builtin_call(&call.function, &call.args);
         }
 
-        // Regular function call
+        // Regular function call - use module-qualified name if available
         let args: Vec<String> = call
             .args
             .iter()
             .map(|arg| self.generate_expression(arg))
             .collect::<NexusResult<Vec<_>>>()?;
 
-        Ok(format!(
-            "{}({})",
-            self.mangle_function_name(&call.function),
-            args.join(", ")
-        ))
+        // First check if this function exists in the current module
+        let func_name = if let Some(qualified) = self
+            .module_function_map
+            .get(&(self.current_module.clone(), call.function.clone()))
+        {
+            // Use the local module's version
+            format!("nx_{}", qualified)
+        } else if let Some(qualified) = self.function_to_module.get(&call.function) {
+            // Fall back to any module's version
+            format!("nx_{}", qualified)
+        } else {
+            self.mangle_function_name(&call.function)
+        };
+
+        Ok(format!("{}({})", func_name, args.join(", ")))
     }
 
     /// Generate a builtin function call
@@ -690,6 +783,12 @@ int main(int argc, char** argv) {
             "gtf32" => self.binary_op(args, ">"),
             "gef32" => self.binary_op(args, ">="),
 
+            // Negation operations
+            "negi32" => self.unary_op(args, "-"),
+            "negi64" => self.unary_op(args, "-"),
+            "negf32" => self.unary_op(args, "-"),
+            "negf64" => self.unary_op(args, "-"),
+
             // Logical operations
             "and" => self.binary_op(args, "&&"),
             "or" => self.binary_op(args, "||"),
@@ -711,7 +810,7 @@ int main(int argc, char** argv) {
                     });
                 }
                 let arg = self.generate_expression(&args[0])?;
-                Ok(format!("nx_array_len({})", arg))
+                Ok(format!("nx_array_len(&({}))", arg))
             }
 
             // String operations
@@ -835,13 +934,21 @@ int main(int argc, char** argv) {
             };
 
             // Create nx_value initializer
-            // For strings, we need to store the actual nx_string in a temp variable
+            // For strings and arrays, we need to store them in temp variables and pass pointers
             if inferred_type == "nx_string" {
                 let temp_var = format!("_str_{}", self.temp_var_counter);
                 self.temp_var_counter += 1;
                 temp_string_decls.push(format!("nx_string {} = {}", temp_var, arg_code));
                 value_inits.push(format!(
                     "(nx_value){{{}, {{.as_string = &{}}}}}",
+                    type_tag, temp_var
+                ));
+            } else if inferred_type == "nx_array" {
+                let temp_var = format!("_arr_{}", self.temp_var_counter);
+                self.temp_var_counter += 1;
+                temp_string_decls.push(format!("nx_array {} = {}", temp_var, arg_code));
+                value_inits.push(format!(
+                    "(nx_value){{{}, {{.as_array = &{}}}}}",
                     type_tag, temp_var
                 ));
             } else {
@@ -854,7 +961,6 @@ int main(int argc, char** argv) {
                     "float" => "as_f32",
                     "double" => "as_f64",
                     "bool" => "as_bool",
-                    "nx_array" => "as_array",
                     _ => "as_ptr",
                 };
                 value_inits.push(format!(
@@ -908,6 +1014,19 @@ int main(int argc, char** argv) {
 
     /// Generate a method call
     fn generate_method_call(&mut self, call: &MethodCallExpr) -> NexusResult<String> {
+        // Check if this is a module-qualified function call (e.g., mathlib.abs())
+        if let Expression::Variable(var_ref) = call.receiver.as_ref() {
+            // This looks like a module-qualified call
+            // Generate as: module_function(args) instead of function(&(module), args)
+            let qualified_name = format!("{}_{}", var_ref.name, call.method);
+            let mut args = Vec::new();
+            for arg in &call.args {
+                args.push(self.generate_expression(arg)?);
+            }
+            return Ok(format!("nx_{}({})", qualified_name, args.join(", ")));
+        }
+
+        // Otherwise, treat as a regular method call
         // In C, methods become regular functions with receiver as first argument
         let receiver = self.generate_expression(&call.receiver)?;
 
@@ -981,9 +1100,19 @@ int main(int argc, char** argv) {
         let idx = self.generate_expression(&index.index)?;
 
         if self.config.bounds_checking && !index.unchecked {
-            Ok(format!("nx_array_get_checked({}, {})", array, idx))
+            // For bounds-checked access, nx_array_get_checked returns void* which we need to cast and dereference
+            // Default to int64_t for now; ideally we'd track the element type
+            let elem_type = "int64_t";
+            Ok(format!(
+                "*(({}*)nx_array_get_checked(&({}), {}))",
+                elem_type, array, idx
+            ))
         } else {
-            Ok(format!("{}[{}]", array, idx))
+            // For unchecked access, directly access the data pointer
+            // Arrays are nx_array structs, so we need to access .data and cast appropriately
+            // Default to int64_t for now; ideally we'd track the element type
+            let elem_type = "int64_t";
+            Ok(format!("(({}*)({}).data)[{}]", elem_type, array, idx))
         }
     }
 
@@ -1034,9 +1163,15 @@ int main(int argc, char** argv) {
     fn nexus_type_to_c(&self, ty: &NexusType) -> NexusResult<String> {
         match ty {
             NexusType::Primitive(prim) => Ok(self.primitive_to_c(prim)),
-            NexusType::Array(_arr) => {
-                // All arrays are represented as nx_array (pointer + length struct)
-                Ok("nx_array".to_string())
+            NexusType::Array(arr) => {
+                // Check if this is a string type (array of runes)
+                if let NexusType::Primitive(PrimitiveType::Rune) = *arr.element_type {
+                    // This is a string (array of runes)
+                    Ok("nx_string".to_string())
+                } else {
+                    // Regular array
+                    Ok("nx_array".to_string())
+                }
             }
             NexusType::Struct(s) => Ok(s.name.clone()),
             NexusType::Interface(_) => Ok("void*".to_string()),
@@ -1197,11 +1332,43 @@ int main(int argc, char** argv) {
                     | "nx_string_concat"
                     | "nx_string_from_value"
                     | "nx_string_from_cstr" => Ok("nx_string".to_string()),
-                    _ => Ok("int64_t".to_string()), // Default for unknown functions
+                    // Arithmetic operations that may involve floats
+                    "addf64" | "subf64" | "mulf64" | "divf64" | "negf64" => {
+                        Ok("double".to_string())
+                    }
+                    "addf32" | "subf32" | "mulf32" | "divf32" | "negf32" => Ok("float".to_string()),
+                    _ => {
+                        // Look up function return type from our registry
+                        if let Some(qualified) = self.function_to_module.get(&call.function)
+                            && let Some(return_type) = self.function_return_types.get(qualified) {
+                                return Ok(return_type.clone());
+                            }
+
+                        // Try to infer from arguments
+                        if !call.args.is_empty() {
+                            let first_arg_type = self.infer_c_type_from_expr(&call.args[0])?;
+                            if first_arg_type == "double" || first_arg_type == "float" {
+                                return Ok(first_arg_type);
+                            }
+                        }
+                        Ok("int64_t".to_string()) // Default for unknown functions
+                    }
                 }
             }
             Expression::MacroCall(_) => Ok("nx_string".to_string()), // Macros typically return strings
-            _ => Ok("int64_t".to_string()),                          // Default fallback
+            Expression::Grouped(inner, _) => self.infer_c_type_from_expr(inner),
+            Expression::MethodCall(method_call) => {
+                // Check if this is a module-qualified function call
+                if let Expression::Variable(var_ref) = method_call.receiver.as_ref() {
+                    // Module-qualified call like mathlib.is_even()
+                    let qualified_name = format!("{}_{}", var_ref.name, method_call.method);
+                    if let Some(return_type) = self.function_return_types.get(&qualified_name) {
+                        return Ok(return_type.clone());
+                    }
+                }
+                Ok("int64_t".to_string()) // Default for method calls
+            }
+            _ => Ok("int64_t".to_string()), // Default fallback
         }
     }
 

@@ -8,6 +8,20 @@ use std::fmt;
 
 use crate::LambdaValue;
 
+/// Format a float like C's %g - remove trailing zeros and handle precision
+fn format_g_style(n: f64) -> String {
+    // Use 6 significant digits like C's %g default
+    let formatted = format!("{:.6}", n);
+
+    if formatted.contains('.') {
+        // Remove trailing zeros after decimal point
+        let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+        trimmed.to_string()
+    } else {
+        formatted
+    }
+}
+
 /// A runtime value in Nexus
 #[derive(Debug, Clone, Default)]
 pub enum Value {
@@ -127,8 +141,8 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::I32(n) => n.to_string(),
             Value::I64(n) => n.to_string(),
-            Value::F32(n) => n.to_string(),
-            Value::F64(n) => n.to_string(),
+            Value::F32(n) => format_g_style(*n as f64),
+            Value::F64(n) => format_g_style(*n),
             Value::Rune(c) => c.to_string(),
             Value::String(s) => s.iter().collect(),
             Value::Bytes(b) => format!("{:?}", b),

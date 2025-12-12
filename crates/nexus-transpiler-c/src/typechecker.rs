@@ -10,7 +10,7 @@ use nexus_types::{
     ArraySize, ArrayType, FunctionType, InterfaceDef, InterfaceMethod, MethodParam, NexusType,
     PrimitiveType, StructDef, StructField, TypeRegistry, UnknownType,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Type information for expressions
 #[derive(Debug, Clone)]
@@ -30,6 +30,8 @@ pub struct TypeChecker<'a> {
     scope_depth: usize,
     subscope_depth: usize,
     builtins: BuiltinRegistry,
+    /// Imported modules for module-qualified calls (e.g., use mathlib)
+    imported_modules: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +62,7 @@ impl<'a> TypeChecker<'a> {
             scope_depth: 0,
             subscope_depth: 0,
             builtins: BuiltinRegistry::new(),
+            imported_modules: HashSet::new(),
         };
         checker.register_builtins();
         checker
@@ -131,7 +134,8 @@ impl<'a> TypeChecker<'a> {
             "f32" => NexusType::Primitive(PrimitiveType::F32),
             "f64" => NexusType::Primitive(PrimitiveType::F64),
             "rune" => NexusType::Primitive(PrimitiveType::Rune),
-            "[]rune" => NexusType::Array(ArrayType {
+            // "str" is an alias for [dyn]rune (dynamic array of runes)
+            "str" | "[]rune" => NexusType::Array(ArrayType {
                 element_type: Box::new(NexusType::Primitive(PrimitiveType::Rune)),
                 size: ArraySize::Dynamic,
                 prealloc: None,
@@ -158,6 +162,56 @@ impl<'a> TypeChecker<'a> {
                 NexusType::Named(type_str.to_string())
             }
         }
+    }
+
+    /// Register all functions and methods from a program (without checking bodies)
+    pub fn register_functions(&mut self, program: &Program, module_name: &str) -> NexusResult<()> {
+        // Register all functions
+        for item in &program.items {
+            if let Item::Function(func) = item {
+                let param_types = func
+                    .params
+                    .iter()
+                    .map(|p| self.resolve_type_expr(&p.ty))
+                    .collect();
+
+                let return_type = self.resolve_type_expr(&func.return_type);
+
+                let sig = FunctionSignature {
+                    params: param_types,
+                    return_type,
+                    color: func.color,
+                };
+
+                // Register with simple name
+                self.functions.insert(func.name.clone(), sig.clone());
+
+                // Also register with module-qualified name (e.g., "mathlib.abs")
+                let qualified_name = format!("{}.{}", module_name, func.name);
+                self.functions.insert(qualified_name, sig);
+            } else if let Item::Method(method) = item {
+                let param_types = method
+                    .params
+                    .iter()
+                    .map(|p| self.resolve_type_expr(&p.ty))
+                    .collect();
+
+                let return_type = self.resolve_type_expr(&method.return_type);
+
+                self.methods
+                    .entry(method.name.clone())
+                    .or_default()
+                    .push(MethodSignature {
+                        receiver_type: method.receiver_type.clone(),
+                        _receiver_mutable: method.receiver_mutable,
+                        params: param_types,
+                        return_type,
+                        _color: method.color,
+                    });
+            }
+        }
+
+        Ok(())
     }
 
     /// Register all types from a program (structs, interfaces)
@@ -223,48 +277,14 @@ impl<'a> TypeChecker<'a> {
 
     /// Check an entire program for type correctness
     pub fn check_program(&mut self, program: &Program) -> NexusResult<()> {
-        // Register all functions first
+        // First, process use statements to track imported modules
         for item in &program.items {
-            if let Item::Function(func) = item {
-                let param_types = func
-                    .params
-                    .iter()
-                    .map(|p| self.resolve_type_expr(&p.ty))
-                    .collect();
-
-                let return_type = self.resolve_type_expr(&func.return_type);
-
-                self.functions.insert(
-                    func.name.clone(),
-                    FunctionSignature {
-                        params: param_types,
-                        return_type,
-                        color: func.color,
-                    },
-                );
-            } else if let Item::Method(method) = item {
-                let param_types = method
-                    .params
-                    .iter()
-                    .map(|p| self.resolve_type_expr(&p.ty))
-                    .collect();
-
-                let return_type = self.resolve_type_expr(&method.return_type);
-
-                self.methods
-                    .entry(method.name.clone())
-                    .or_default()
-                    .push(MethodSignature {
-                        receiver_type: method.receiver_type.clone(),
-                        _receiver_mutable: method.receiver_mutable,
-                        params: param_types,
-                        return_type,
-                        _color: method.color,
-                    });
+            if let Item::Use(use_stmt) = item {
+                self.process_use_statement(use_stmt);
             }
         }
 
-        // Then check each function body
+        // Check each function body (functions should already be registered)
         for item in &program.items {
             match item {
                 Item::Function(func) => self.check_function(func)?,
@@ -274,6 +294,15 @@ impl<'a> TypeChecker<'a> {
         }
 
         Ok(())
+    }
+
+    /// Process use statements to track module imports
+    fn process_use_statement(&mut self, use_stmt: &UseStatement) {
+        // If symbols is empty, it's a module-level import (e.g., use mathlib)
+        if use_stmt.symbols.is_empty() {
+            let module_name = use_stmt.module_path.join(".");
+            self.imported_modules.insert(module_name);
+        }
     }
 
     /// Check a function definition
@@ -612,7 +641,12 @@ impl<'a> TypeChecker<'a> {
                 continue;
             }
             let arg_type = self.check_expression(arg)?;
-            if !arg_type.ty.is_assignable_to(expected_type) {
+
+            // Resolve both types to handle Named types like "str"
+            let resolved_expected = self.type_registry.resolve_type(expected_type);
+            let resolved_arg = self.type_registry.resolve_type(&arg_type.ty);
+
+            if !resolved_arg.is_assignable_to(&resolved_expected) {
                 return Err(NexusError::TypeError {
                     message: format!(
                         "Argument {} to '{}': expected type '{}', got '{}'",
@@ -631,6 +665,63 @@ impl<'a> TypeChecker<'a> {
 
     /// Check a method call
     fn check_method_call(&mut self, call: &MethodCallExpr) -> NexusResult<NexusType> {
+        // Check if this is a module-qualified function call (e.g., mathlib.abs())
+        if let Expression::Variable(var_ref) = call.receiver.as_ref() {
+            let module_name = &var_ref.name;
+
+            // Check if this is an imported module
+            if self.imported_modules.contains(module_name) {
+                // Look up the function by its qualified name
+                let qualified_name = format!("{}.{}", module_name, call.method);
+
+                // Try to find the function
+                if let Some(func_sig) = self.functions.get(&qualified_name).cloned() {
+                    // Check argument count
+                    if call.args.len() != func_sig.params.len() {
+                        return Err(NexusError::TypeError {
+                            message: format!(
+                                "Function '{}' expects {} arguments, got {}",
+                                qualified_name,
+                                func_sig.params.len(),
+                                call.args.len()
+                            ),
+                            span: call.span,
+                        });
+                    }
+
+                    // Check argument types
+                    for (i, arg) in call.args.iter().enumerate() {
+                        let expected_type = &func_sig.params[i];
+                        let arg_type = self.check_expression(arg)?;
+
+                        let resolved_expected = self.type_registry.resolve_type(expected_type);
+                        let resolved_arg = self.type_registry.resolve_type(&arg_type.ty);
+
+                        if !resolved_arg.is_assignable_to(&resolved_expected) {
+                            return Err(NexusError::TypeError {
+                                message: format!(
+                                    "Argument {} to '{}': expected type '{}', got '{}'",
+                                    i + 1,
+                                    qualified_name,
+                                    expected_type,
+                                    arg_type.ty
+                                ),
+                                span: call.span,
+                            });
+                        }
+                    }
+
+                    return Ok(func_sig.return_type);
+                }
+
+                // Function not found in this module
+                return Err(NexusError::TypeError {
+                    message: format!("Undefined function '{}'", qualified_name),
+                    span: call.span,
+                });
+            }
+        }
+
         let receiver_type = self.check_expression(&call.receiver)?;
 
         // Find matching method

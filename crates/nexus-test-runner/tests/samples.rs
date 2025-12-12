@@ -7,9 +7,12 @@
 //! - `expected.out` - expected output
 //!
 //! Test functions (fn test_*) are run via `nexus test <path>`.
+//!
+//! Also tests C transpiler by transpiling, compiling, and comparing output.
 
+use nexus_transpiler_c::{CTranspiler, TranspilerConfig};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Get the path to the samples directory
@@ -155,6 +158,9 @@ fn run_single_sample(sample: &Sample) -> Result<(), String> {
         ));
     }
 
+    // Test C transpiler
+    test_c_transpiler(sample, &actual_normalized)?;
+
     // Run nexus test to execute any test_* functions
     match run_nexus_test(&sample.dir) {
         Ok(output) => {
@@ -176,6 +182,141 @@ fn run_single_sample(sample: &Sample) -> Result<(), String> {
             }
         }
     }
+}
+
+/// Test C transpiler for a sample
+fn test_c_transpiler(sample: &Sample, interpreter_output: &str) -> Result<(), String> {
+    // Create temp directory
+    let temp_dir = sample.dir.join("c_transpile");
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("{}: Failed to create C temp dir: {}", sample.name, e))?;
+
+    // Transpile
+    let config = TranspilerConfig {
+        output_dir: temp_dir.clone(),
+        ..Default::default()
+    };
+    let mut transpiler = CTranspiler::with_config(config);
+    let result = transpiler
+        .transpile_project(&sample.dir)
+        .map_err(|e| format!("{}: C transpilation failed: {}", sample.name, e))?;
+
+    // Write files
+    for (path, content) in &result.files {
+        fs::write(path, content)
+            .map_err(|e| format!("{}: Failed to write C file: {}", sample.name, e))?;
+    }
+    fs::write(
+        temp_dir.join("nexus_core.h"),
+        nexus_transpiler_c::RUNTIME_HEADER,
+    )
+    .map_err(|e| format!("{}: Failed to write runtime header: {}", sample.name, e))?;
+    fs::write(temp_dir.join("nexus_core.c"), &result.runtime)
+        .map_err(|e| format!("{}: Failed to write runtime: {}", sample.name, e))?;
+
+    // Try to compile and run
+    if let Some(c_output) = try_compile_and_run(&temp_dir, &result, &sample.name)? {
+        let c_normalized = normalize_output(&c_output);
+        let interpreter_normalized = normalize_output(interpreter_output);
+
+        if c_normalized != interpreter_normalized {
+            return Err(format!(
+                "{}: C output differs from interpreter\n  Interpreter:\n{}\n  C:\n{}",
+                sample.name,
+                interpreter_normalized
+                    .lines()
+                    .map(|l| format!("    {}", l))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                c_normalized
+                    .lines()
+                    .map(|l| format!("    {}", l))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Try to compile and run C code, return output if successful
+fn try_compile_and_run(
+    temp_dir: &Path,
+    result: &nexus_transpiler_c::TranspileResult,
+    sample_name: &str,
+) -> Result<Option<String>, String> {
+    let mut c_files: Vec<PathBuf> = result.files.keys().cloned().collect();
+    c_files.push(temp_dir.join("nexus_core.c"));
+
+    let exe_name = if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    };
+    let exe_path = temp_dir.join(exe_name);
+
+    // Try compilers
+    for compiler in &["clang", "gcc", "tcc"] {
+        if Command::new(compiler)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_err()
+        {
+            continue;
+        }
+
+        let mut cmd = Command::new(compiler);
+        cmd.current_dir(temp_dir);
+        cmd.arg("-I").arg(".");
+        for c_file in &c_files {
+            cmd.arg(c_file.file_name().unwrap());
+        }
+        cmd.arg("-o").arg(&exe_path);
+
+        // Add math library on Unix-like systems
+        if !cfg!(windows) {
+            cmd.arg("-lm");
+        }
+
+        let compile_output = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("{}: Failed to run {}: {}", sample_name, compiler, e))?;
+
+        if !compile_output.status.success() {
+            let stderr = String::from_utf8_lossy(&compile_output.stderr);
+            return Err(format!(
+                "{}: C compilation failed with {}:\n{}",
+                sample_name, compiler, stderr
+            ));
+        }
+
+        let run_output = Command::new(&exe_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("{}: Failed to run compiled program: {}", sample_name, e))?;
+
+        if !run_output.status.success() {
+            let stderr = String::from_utf8_lossy(&run_output.stderr);
+            return Err(format!(
+                "{}: Compiled program failed:\n{}",
+                sample_name, stderr
+            ));
+        }
+
+        return Ok(Some(
+            String::from_utf8_lossy(&run_output.stdout).to_string(),
+        ));
+    }
+
+    // No compiler available - skip C test
+    Ok(None)
 }
 
 #[test]
