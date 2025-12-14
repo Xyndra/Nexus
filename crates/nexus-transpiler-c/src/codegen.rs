@@ -300,7 +300,7 @@ impl<'a> CCodeGenerator<'a> {
         let mut func_impl = format!("{} {{\n", sig);
 
         // Generate local variable declarations (we'll collect these as we process the body)
-        let body_code = self.generate_block(&func.body)?;
+        let body_code = self.generate_block_with_implicit_return(&func.body, &return_type)?;
         func_impl.push_str(&body_code);
 
         func_impl.push_str("}\n");
@@ -391,6 +391,52 @@ int main(int argc, char** argv) {{
         self.indent_level += 1;
 
         for stmt in &block.statements {
+            code.push_str(&self.generate_statement(stmt)?);
+        }
+
+        self.indent_level -= 1;
+        Ok(code)
+    }
+
+    /// Generate a block of statements with implicit return handling for function bodies
+    fn generate_block_with_implicit_return(
+        &mut self,
+        block: &Block,
+        return_type: &str,
+    ) -> NexusResult<String> {
+        let mut code = String::new();
+        self.indent_level += 1;
+
+        // Check if we need to handle implicit returns (non-void return type)
+        let needs_implicit_return = return_type != "void";
+
+        let num_stmts = block.statements.len();
+        for (i, stmt) in block.statements.iter().enumerate() {
+            let is_last = i == num_stmts - 1;
+
+            // If this is the last statement and we need implicit returns
+            if is_last && needs_implicit_return {
+                // Check if it's an expression statement (not already a return)
+                if let Statement::Expression(expr) = stmt {
+                    // Convert the expression statement into a return statement
+                    let mut expr_code = self.generate_expression(expr)?;
+                    // Strip redundant outer parentheses from return value
+                    // e.g., "((a + b))" -> "(a + b)"
+                    if expr_code.starts_with('(') && expr_code.ends_with(')') {
+                        expr_code = expr_code[1..expr_code.len() - 1].to_string();
+                    }
+                    // Drain prelude into a local variable to avoid borrow conflicts
+                    let prelude: Vec<String> = self.statement_prelude.drain(..).collect();
+                    // Emit any prelude statements first
+                    for prelude_stmt in prelude {
+                        code.push_str(&self.indent(&format!("{};\n", prelude_stmt)));
+                    }
+                    code.push_str(&self.indent(&format!("return {};\n", expr_code)));
+                    continue;
+                }
+            }
+
+            // For all other statements, generate normally
             code.push_str(&self.generate_statement(stmt)?);
         }
 
@@ -545,7 +591,12 @@ int main(int argc, char** argv) {{
         let mut code = String::new();
 
         if let Some(ref value) = ret.value {
-            let expr = self.generate_expression(value)?;
+            let mut expr = self.generate_expression(value)?;
+            // Strip redundant outer parentheses from return value
+            // e.g., "((a + b))" -> "(a + b)"
+            if expr.starts_with('(') && expr.ends_with(')') {
+                expr = expr[1..expr.len() - 1].to_string();
+            }
             // Drain prelude into a local variable to avoid borrow conflicts
             let prelude: Vec<String> = self.statement_prelude.drain(..).collect();
             // Emit any prelude statements first
@@ -564,7 +615,16 @@ int main(int argc, char** argv) {{
         let mut code = String::new();
 
         let condition = match &if_stmt.condition {
-            IfCondition::Boolean(expr) => self.generate_expression(expr)?,
+            IfCondition::Boolean(expr) => {
+                let cond = self.generate_expression(expr)?;
+                // Strip redundant outer parentheses from condition
+                // e.g., "((a < b))" -> "(a < b)"
+                if cond.starts_with('(') && cond.ends_with(')') {
+                    cond[1..cond.len() - 1].to_string()
+                } else {
+                    cond
+                }
+            }
             IfCondition::Pattern { matcher, cases } => {
                 // Pattern matching - generate switch-like code
                 return self.generate_pattern_match(matcher, cases, &if_stmt.then_block);
@@ -1340,9 +1400,10 @@ int main(int argc, char** argv) {{
                     _ => {
                         // Look up function return type from our registry
                         if let Some(qualified) = self.function_to_module.get(&call.function)
-                            && let Some(return_type) = self.function_return_types.get(qualified) {
-                                return Ok(return_type.clone());
-                            }
+                            && let Some(return_type) = self.function_return_types.get(qualified)
+                        {
+                            return Ok(return_type.clone());
+                        }
 
                         // Try to infer from arguments
                         if !call.args.is_empty() {

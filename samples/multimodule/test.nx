@@ -1,4 +1,7 @@
 // Tests for the main multimodule sample
+use mathlib
+use { count_up_to, clamp, sign, in_range } from util
+use { all } from std.util.testing
 
 // Test that mathlib functions are accessible from main module
 std test_mathlib_integration(): bool {
@@ -19,7 +22,7 @@ std test_mathlib_integration(): bool {
     c check6 = eqi64(gcd_result, 12)
     c check7 = eqi64(lcm_result, 20)
 
-    and(and(and(and(and(and(check1, check2), check3), check4), check5), check6), check7)
+    $all("check1;check2;check3;check4;check5;check6;check7")
 }
 
 // Test that utils functions are accessible from main module
@@ -34,7 +37,7 @@ std test_utils_integration(): bool {
     c check2 = eqi64(clamp_result, 0)
     c check3 = eqi64(sign_result, 1)
 
-    and(and(and(check1, check2), check3), in_range_result)
+    $all("check1;check2;check3;in_range_result")
 }
 
 // Test combining functions from both modules
@@ -55,7 +58,7 @@ std test_combined_usage(): bool {
     c check4 = eqi64(sign_of_neg, subi64(0, 1))
     c check5 = eqi64(sign_of_abs, 1)
 
-    and(and(and(and(check1, check2), check3), check4), check5)
+    $all("check1;check2;check3;check4;check5")
 }
 
 // Test edge cases across modules
@@ -75,5 +78,5 @@ std test_edge_cases(): bool {
     c check3 = eqi64(zero_factorial, 1)
     c check4 = eqi64(zero_clamp, 0)
 
-    and(and(and(and(and(check1, check2), check3), check4), in_range_min), in_range_max)
+    $all("check1;check2;check3;check4;in_range_min;in_range_max")
 }

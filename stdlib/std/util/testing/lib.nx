@@ -1,0 +1,92 @@
+// Standard library testing utilities
+// Module: std.util.testing
+
+// $all macro - takes a semicolon-separated list of boolean expressions
+// and combines them with nested and() calls.
+//
+// Usage: $all("check1;check2;check3;check4")
+// Generates: and(and(and(check1, check2), check3), check4)
+//
+// This makes test assertions much cleaner:
+// Instead of: and(and(and(check1, check2), check3), check4)
+// Write: $all("check1;check2;check3;check4")
+
+$all([dyn]rune checks): macro {
+    m result = ""
+    m i = 0
+    c checks_len = len(checks)
+    m current_expr = ""
+    m expr_count = 0
+    m first = true
+
+    subscope parse {
+        // Check if we're done
+        if (gei64(i, checks_len)) {
+            // Flush last expression if any
+            if (gti64(len(current_expr), 0)) {
+                if (first) {
+                    result = current_expr
+                    first = false
+                } else {
+                    result = concat(concat(concat("and(", result), ", "), concat(current_expr, ")"))
+                }
+                expr_count = addi64(expr_count, 1)
+            }
+            return
+        }
+
+        c ch = checks[@unchecked i]
+
+        // Check for semicolon separator
+        if (eqr(ch, ";"[0])) {
+            // Flush current expression
+            if (gti64(len(current_expr), 0)) {
+                if (first) {
+                    result = current_expr
+                    first = false
+                } else {
+                    result = concat(concat(concat("and(", result), ", "), concat(current_expr, ")"))
+                }
+                expr_count = addi64(expr_count, 1)
+                current_expr = ""
+            }
+            i = addi64(i, 1)
+            goto parse
+        }
+
+        // Skip leading/trailing whitespace in expressions
+        if (eqr(ch, " "[0])) {
+            if (eqi64(len(current_expr), 0)) {
+                // Skip leading whitespace
+                i = addi64(i, 1)
+                goto parse
+            }
+        }
+
+        // Accumulate expression character
+        current_expr = push(current_expr, ch)
+        i = addi64(i, 1)
+        goto parse
+    }
+
+    // Trim trailing whitespace from result
+    m trimmed = ""
+    m j = 0
+    c result_len = len(result)
+    subscope trim {
+        if (gei64(j, result_len)) {
+            return
+        }
+        c ch = result[@unchecked j]
+        trimmed = push(trimmed, ch)
+        j = addi64(j, 1)
+        goto trim
+    }
+
+    // Handle empty or single expression
+    if (eqi64(expr_count, 0)) {
+        return "true"
+    }
+
+    return trimmed
+}

@@ -83,5 +83,5 @@ std is_odd(i64 n): bool {
 
 // Calculate the sum from 1 to n
 std sum_to_n(i64 n): i64 {
-    return divi64(muli64(n, addi64(n, 1)), 2)
+    divi64(muli64(n, addi64(n, 1)), 2)
 }
