@@ -1,0 +1,91 @@
+use { println } from compat.io
+
+compat add(i64 a, i64 b): i64 {
+    return addi64(a, b)
+}
+
+compat multiply(i64 a, i64 b): i64 {
+    return muli64(a, b)
+}
+
+// Test nested function calls in defaults
+struct Complex {
+    i64 value = add(multiply(2, 3), multiply(4, 5))
+}
+
+// Test struct with all defaults
+struct AllDefaults {
+    i64 a = 10
+    i64 b = 20
+    i64 c = 30
+}
+
+// Test struct with no defaults
+struct NoDefaults {
+    i64 x
+    i64 y
+}
+
+// Test mixed: some defaults, some not
+struct Mixed {
+    i64 required
+    i64 optional = 999
+}
+
+// Test multiple structs with same field names
+struct StructA {
+    i64 value = 100
+}
+
+struct StructB {
+    i64 value = 200
+}
+
+compat main(): void {
+    println("Test 1: Nested function calls in defaults")
+    c complex = Complex {}
+    println(complex.value)  // Should be 2*3 + 4*5 = 6 + 20 = 26
+
+    println("Test 2: All defaults used")
+    c allDef = AllDefaults {}
+    println(allDef.a)
+    println(allDef.b)
+    println(allDef.c)
+
+    println("Test 3: Override some of all defaults")
+    c partialDef = AllDefaults { b: 999 }
+    println(partialDef.a)  // Should be 10 (default)
+    println(partialDef.b)  // Should be 999 (overridden)
+    println(partialDef.c)  // Should be 30 (default)
+
+    println("Test 4: No defaults - must provide all")
+    c noDef = NoDefaults { x: 1, y: 2 }
+    println(noDef.x)
+    println(noDef.y)
+
+    println("Test 5: Mixed - provide required only")
+    c mixed1 = Mixed { required: 42 }
+    println(mixed1.required)
+    println(mixed1.optional)  // Should be 999 (default)
+
+    println("Test 6: Mixed - provide both")
+    c mixed2 = Mixed { required: 42, optional: 777 }
+    println(mixed2.required)
+    println(mixed2.optional)  // Should be 777 (overridden)
+
+    println("Test 7: Multiple struct types with same field names")
+    c a = StructA {}
+    c b = StructB {}
+    println(a.value)  // Should be 100
+    println(b.value)  // Should be 200
+
+    println("Test 8: Multiple instances of same struct")
+    c a1 = StructA {}
+    c a2 = StructA {}
+    c a3 = StructA {}
+    println(a1.value)
+    println(a2.value)
+    println(a3.value)
+
+    println("All edge case tests passed!")
+}

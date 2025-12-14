@@ -1,0 +1,33 @@
+Point created:
+10
+20
+Player created:
+Alice
+100
+0
+Full player created:
+Bob
+150
+1000
+Rect created:
+0
+0
+100
+50
+Multiple points created:
+1
+2
+3
+4
+Sum of x coordinates:
+4
+Modifying point1...
+Modified point1:
+100
+200
+Modifying player health...
+Modified player:
+Alice
+75
+500
+All struct tests passed!

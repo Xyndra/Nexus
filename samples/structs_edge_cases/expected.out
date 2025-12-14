@@ -1,0 +1,27 @@
+Test 1: Nested function calls in defaults
+26
+Test 2: All defaults used
+10
+20
+30
+Test 3: Override some of all defaults
+10
+999
+30
+Test 4: No defaults - must provide all
+1
+2
+Test 5: Mixed - provide required only
+42
+999
+Test 6: Mixed - provide both
+42
+777
+Test 7: Multiple struct types with same field names
+100
+200
+Test 8: Multiple instances of same struct
+100
+100
+100
+All edge case tests passed!

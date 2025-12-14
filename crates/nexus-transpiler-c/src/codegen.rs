@@ -38,6 +38,8 @@ pub struct CCodeGenerator<'a> {
     macro_context: Option<MacroExpansionContext>,
     variable_types: std::collections::HashMap<String, String>,
     statement_prelude: Vec<String>,
+    /// Struct definitions for default value generation
+    struct_defs: HashMap<String, StructDefAst>,
 }
 
 impl<'a> CCodeGenerator<'a> {
@@ -63,6 +65,7 @@ impl<'a> CCodeGenerator<'a> {
             macro_context: None,
             variable_types: std::collections::HashMap::new(),
             statement_prelude: Vec::new(),
+            struct_defs: HashMap::new(),
         }
     }
 
@@ -217,17 +220,27 @@ impl<'a> CCodeGenerator<'a> {
 
     /// Generate a struct definition
     fn generate_struct(&mut self, struct_def: &StructDefAst) -> NexusResult<()> {
-        let mut struct_code = format!("typedef struct {} {{\n", struct_def.name);
+        // Store the struct definition for later use in default value generation
+        self.struct_defs
+            .insert(struct_def.name.clone(), struct_def.clone());
+
+        let prefixed_name = self.prefix_struct_name(&struct_def.name);
+        let mut struct_code = format!("typedef struct {} {{\n", prefixed_name);
 
         for field in &struct_def.fields {
             let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&field.ty))?;
             struct_code.push_str(&format!("    {} {};\n", c_type, field.name));
         }
 
-        struct_code.push_str(&format!("}} {};\n", struct_def.name));
+        struct_code.push_str(&format!("}} {};\n", prefixed_name));
 
         self.forward_decls.push(struct_code);
         Ok(())
+    }
+
+    /// Generate a prefixed struct name for C
+    fn prefix_struct_name(&self, name: &str) -> String {
+        format!("nx_{}_{}", self.current_module.replace(".", "_"), name)
     }
 
     /// Generate a function forward declaration
@@ -1211,12 +1224,45 @@ int main(int argc, char** argv) {{
     fn generate_struct_init(&mut self, init: &StructInitExpr) -> NexusResult<String> {
         let mut fields = Vec::new();
 
+        // Get the struct definition to access default values
+        let struct_def = self.struct_defs.get(&init.name).cloned();
+
+        // Collect explicitly provided field names
+        let provided_fields: HashSet<String> = init.fields.iter().map(|f| f.name.clone()).collect();
+
+        // Process explicitly provided fields
         for field_init in &init.fields {
             let value = self.generate_expression(&field_init.value)?;
             fields.push(format!(".{} = {}", field_init.name, value));
         }
 
-        Ok(format!("({}){{{}}}", init.name, fields.join(", ")))
+        // Process fields with defaults that weren't explicitly provided
+        if let Some(struct_def) = struct_def {
+            for field in &struct_def.fields {
+                if !provided_fields.contains(&field.name) {
+                    if let Some(default_expr) = &field.default {
+                        // Generate a unique temporary variable for the default value
+                        let temp_var = format!(
+                            "_default_{}_{}_{}",
+                            init.name, field.name, self.temp_var_counter
+                        );
+                        self.temp_var_counter += 1;
+                        let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&field.ty))?;
+                        let default_value = self.generate_expression(default_expr)?;
+
+                        // Add the temporary variable to the statement prelude (no semicolon, added when emitting)
+                        self.statement_prelude
+                            .push(format!("{} {} = {}", c_type, temp_var, default_value));
+
+                        // Use the temporary variable in the initializer
+                        fields.push(format!(".{} = {}", field.name, temp_var));
+                    }
+                }
+            }
+        }
+
+        let prefixed_name = self.prefix_struct_name(&init.name);
+        Ok(format!("({}){{{}}}", prefixed_name, fields.join(", ")))
     }
 
     /// Convert Nexus type to C type string
@@ -1233,7 +1279,7 @@ int main(int argc, char** argv) {{
                     Ok("nx_array".to_string())
                 }
             }
-            NexusType::Struct(s) => Ok(s.name.clone()),
+            NexusType::Struct(s) => Ok(self.prefix_struct_name(&s.name)),
             NexusType::Interface(_) => Ok("void*".to_string()),
             NexusType::Unknown(_) => Ok("nx_unknown".to_string()),
             NexusType::Function(_) => Ok("void*".to_string()),
@@ -1241,7 +1287,12 @@ int main(int argc, char** argv) {{
             NexusType::Named(name) => {
                 let resolved = self.type_registry.resolve_type(ty);
                 if resolved == *ty {
-                    Ok(name.clone())
+                    // Check if this is a struct name and prefix it
+                    if self.type_registry.get_struct(name).is_some() {
+                        Ok(self.prefix_struct_name(name))
+                    } else {
+                        Ok(name.clone())
+                    }
                 } else {
                     self.nexus_type_to_c(&resolved)
                 }
@@ -1428,6 +1479,34 @@ int main(int argc, char** argv) {{
                     }
                 }
                 Ok("int64_t".to_string()) // Default for method calls
+            }
+            Expression::StructInit(struct_init) => {
+                // Return the prefixed struct type name
+                Ok(self.prefix_struct_name(&struct_init.name))
+            }
+            Expression::FieldAccess(field_access) => {
+                // Get the type of the object being accessed
+                if let Expression::Variable(var_ref) = field_access.object.as_ref() {
+                    // Look up the variable type
+                    if let Some(var_type) = self.variable_types.get(&var_ref.name) {
+                        // If it's a struct, look up the field type
+                        if var_type.starts_with("nx_") {
+                            // Extract struct name from prefixed type (nx_module_StructName)
+                            let parts: Vec<&str> = var_type.split('_').collect();
+                            if parts.len() >= 3 {
+                                let struct_name = parts[2..].join("_");
+                                if let Some(struct_def) =
+                                    self.type_registry.get_struct(&struct_name)
+                                {
+                                    if let Some(field) = struct_def.get_field(&field_access.field) {
+                                        return Ok(self.nexus_type_to_c(&field.field_type)?);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok("int64_t".to_string()) // Default fallback for field access
             }
             _ => Ok("int64_t".to_string()), // Default fallback
         }

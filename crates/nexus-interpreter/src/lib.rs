@@ -19,7 +19,7 @@ use nexus_parser::{
     StructDefAst, StructInitExpr, SubscopeStmt, UseStatement, VarDecl,
 };
 use nexus_permissions::{CompatPermission, Permission, PermissionManager, PermissionSet};
-use nexus_types::{InterfaceDef, StructDef, TypeRegistry};
+use nexus_types::{InterfaceDef, NexusType, StructDef, TypeRegistry};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -58,6 +58,8 @@ pub struct Interpreter {
     methods: HashMap<String, MethodDef>,
     /// Macro definitions
     macros: HashMap<String, nexus_parser::MacroDef>,
+    /// Struct AST definitions (for default value evaluation)
+    struct_defs: HashMap<String, StructDefAst>,
     /// Permission manager
     permissions: PermissionManager,
     /// Builtin functions
@@ -103,6 +105,7 @@ impl Interpreter {
             functions: HashMap::new(),
             methods: HashMap::new(),
             macros: HashMap::new(),
+            struct_defs: HashMap::new(),
             permissions,
             builtins: BuiltinRegistry::new(),
             imported_symbols: HashMap::new(),
@@ -352,13 +355,71 @@ impl Interpreter {
 
     /// Register a struct definition
     fn register_struct(&mut self, def: &StructDefAst) -> NexusResult<()> {
+        // Store the AST definition for later default value evaluation
+        self.struct_defs.insert(def.name.clone(), def.clone());
+
         let mut struct_def = StructDef::new(&def.name, def.span);
         for iface in &def.implements {
             struct_def.add_impl(iface);
         }
-        // Fields are handled separately during type resolution
+
+        // Add fields to the struct definition
+        for field_def in &def.fields {
+            let field_type = self.resolve_type_expr(&field_def.ty);
+            let mut struct_field =
+                nexus_types::StructField::new(&field_def.name, field_type, field_def.span);
+
+            // Mark that field has a default (will be evaluated lazily)
+            if field_def.default.is_some() {
+                struct_field.default_value = Some("<has_default>".to_string());
+            }
+
+            struct_def.add_field(struct_field);
+        }
+
         self.type_registry.register_struct(struct_def);
         Ok(())
+    }
+
+    /// Resolve a type expression to a concrete type
+    fn resolve_type_expr(&self, ty_expr: &nexus_parser::TypeExpr) -> NexusType {
+        use nexus_parser::{ArraySizeExpr, TypeExpr};
+        use nexus_types::{ArraySize, ArrayType, PrimitiveType};
+
+        match ty_expr {
+            TypeExpr::Named { name, .. } => {
+                let ty = NexusType::Named(name.clone());
+                self.type_registry.resolve_type(&ty)
+            }
+            TypeExpr::Array { element, size, .. } => {
+                let element_type = Box::new(self.resolve_type_expr(element));
+                let array_size = match size {
+                    ArraySizeExpr::Fixed(n) => ArraySize::Fixed(*n),
+                    ArraySizeExpr::Dynamic => ArraySize::Dynamic,
+                };
+                NexusType::Array(ArrayType {
+                    element_type,
+                    size: array_size,
+                    prealloc: None,
+                })
+            }
+            TypeExpr::Void { .. } => NexusType::Primitive(PrimitiveType::Void),
+            TypeExpr::Unknown { variants, .. } => {
+                let resolved_variants: Vec<NexusType> =
+                    variants.iter().map(|v| self.resolve_type_expr(v)).collect();
+                NexusType::Unknown(nexus_types::UnknownType {
+                    variants: resolved_variants,
+                })
+            }
+            TypeExpr::Function { .. } => {
+                // For now, treat functions as generic function pointers
+                NexusType::Function(nexus_types::FunctionType {
+                    params: Vec::new(),
+                    return_type: Box::new(NexusType::Primitive(PrimitiveType::Void)),
+                    color: nexus_core::FunctionColor::Std,
+                })
+            }
+        }
     }
 
     /// Register an interface definition
@@ -584,15 +645,45 @@ impl Interpreter {
     fn assign_field(
         &mut self,
         field: &FieldAccessExpr,
-        _value: Value,
+        value: Value,
         scope: &mut Scope,
     ) -> NexusResult<()> {
-        // This is a simplified implementation
-        // A full implementation would handle nested field access
-        let _object = self.evaluate_expression(&field.object, scope)?;
-        // TODO: Implement proper field assignment
+        // Get the variable name from the object expression
+        if let Expression::Variable(var_ref) = &*field.object {
+            // Get the variable from scope
+            let mut var =
+                scope
+                    .get(&var_ref.name)
+                    .ok_or_else(|| NexusError::UndefinedVariable {
+                        name: var_ref.name.clone(),
+                        span: var_ref.span,
+                    })?;
+
+            // Check if it's a struct
+            if let Value::Struct(instance) = &mut var.value {
+                // Convert the value to FieldValue and set it
+                let field_value = self.value_to_field_value(&value);
+                if !instance.set_field(&field.field, field_value) {
+                    return Err(NexusError::RuntimeError {
+                        message: format!("Unknown field: {}", field.field),
+                        span: Some(field.span),
+                    });
+                }
+
+                // Assign the modified struct back to the variable
+                scope.assign(&var_ref.name, var.value, var_ref.span)?;
+                return Ok(());
+            } else {
+                return Err(NexusError::TypeError {
+                    message: "Cannot assign to field of non-struct value".to_string(),
+                    span: field.span,
+                });
+            }
+        }
+
+        // For nested field access or more complex cases
         Err(NexusError::RuntimeError {
-            message: "Field assignment not yet implemented".to_string(),
+            message: "Nested field assignment not yet implemented".to_string(),
             span: Some(field.span),
         })
     }
@@ -1323,12 +1414,29 @@ impl Interpreter {
                     span: init.span,
                 })?;
 
-        let mut instance = nexus_types::StructInstance::new(struct_def);
+        let mut instance = nexus_types::StructInstance::new(struct_def.clone());
 
+        // Set explicitly initialized fields
         for field_init in &init.fields {
             let value = self.evaluate_expression(&field_init.value, scope)?;
             let field_value = self.value_to_field_value(&value);
             instance.set_field(&field_init.name, field_value);
+        }
+
+        // Evaluate default values for uninitialized fields
+        if let Some(struct_ast) = self.struct_defs.get(&init.name).cloned() {
+            for (i, field_ast) in struct_ast.fields.iter().enumerate() {
+                if let Some(field_val) = instance.values.get(i) {
+                    if !field_val.is_set {
+                        // Field was not explicitly set, try to use default
+                        if let Some(default_expr) = &field_ast.default {
+                            let default_value = self.evaluate_expression(default_expr, scope)?;
+                            let field_value = self.value_to_field_value(&default_value);
+                            instance.set_field(&field_ast.name, field_value);
+                        }
+                    }
+                }
+            }
         }
 
         Ok(Value::Struct(Box::new(instance)))

@@ -1,0 +1,45 @@
+use { println } from compat.io
+
+compat add(i64 a, i64 b): i64 {
+    c result = addi64(a, b)
+    println(result)
+    return result
+}
+
+struct Point {
+    i64 x = add(5, 10)
+    i64 y = add(20, 30)
+}
+
+struct Config {
+    i64 maxValue = add(100, 200)
+    i64 minValue = 0
+}
+
+compat main(): void {
+    // Test 1: All defaults should be evaluated
+    println("Creating point with defaults...")
+    c p1 = Point {}
+    println("Point x:")
+    println(p1.x)
+    println("Point y:")
+    println(p1.y)
+
+    // Test 2: Override one field, other should still use default
+    println("Creating point with only x overridden...")
+    c p2 = Point { x: 999 }
+    println("Point x:")
+    println(p2.x)
+    println("Point y (should still call add):")
+    println(p2.y)
+
+    // Test 3: Config with partial defaults
+    println("Creating config with defaults...")
+    c cfg = Config {}
+    println("Config maxValue:")
+    println(cfg.maxValue)
+    println("Config minValue:")
+    println(cfg.minValue)
+
+    println("All tests passed!")
+}

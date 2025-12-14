@@ -1,0 +1,85 @@
+use { println } from compat.io
+
+// Basic struct definition
+struct Point {
+    i64 x
+    i64 y
+}
+
+// Struct with default values
+struct Player {
+    str name
+    i64 health = 100
+    i64 score = 0
+}
+
+// Struct with mixed types
+struct Rect {
+    i64 x
+    i64 y
+    i64 width
+    i64 height
+}
+
+compat main(): void {
+    // Test 1: Basic struct initialization
+    c p1 = Point { x: 10, y: 20 }
+    println("Point created:")
+    println(p1.x)
+    println(p1.y)
+
+    // Test 2: Struct with default values (partial initialization)
+    m player = Player { name: "Alice" }
+    println("Player created:")
+    println(player.name)
+    println(player.health)
+    println(player.score)
+
+    // Test 3: Struct with all fields specified
+    c fullPlayer = Player { name: "Bob", health: 150, score: 1000 }
+    println("Full player created:")
+    println(fullPlayer.name)
+    println(fullPlayer.health)
+    println(fullPlayer.score)
+
+    // Test 4: Rect struct
+    c rect = Rect { x: 0, y: 0, width: 100, height: 50 }
+    println("Rect created:")
+    println(rect.x)
+    println(rect.y)
+    println(rect.width)
+    println(rect.height)
+
+    // Test 5: Multiple instances
+    m point1 = Point { x: 1, y: 2 }
+    m point2 = Point { x: 3, y: 4 }
+    println("Multiple points created:")
+    println(point1.x)
+    println(point1.y)
+    println(point2.x)
+    println(point2.y)
+
+    // Test 6: Field access with arithmetic
+    c sum = addi64(point1.x, point2.x)
+    println("Sum of x coordinates:")
+    println(sum)
+
+    // Test 7: Modifying struct fields
+    println("Modifying point1...")
+    point1.x = 100
+    point1.y = 200
+    println("Modified point1:")
+    println(point1.x)
+    println(point1.y)
+
+    // Test 8: Modifying player health
+    println("Modifying player health...")
+    player.health = 75
+    player.score = 500
+    println("Modified player:")
+    println(player.name)
+    println(player.health)
+    println(player.score)
+
+    println("All struct tests passed!")
+}

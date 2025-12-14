@@ -1,0 +1,20 @@
+Creating point with defaults...
+15
+50
+Point x:
+15
+Point y:
+50
+Creating point with only x overridden...
+50
+Point x:
+999
+Point y (should still call add):
+50
+Creating config with defaults...
+300
+Config maxValue:
+300
+Config minValue:
+0
+All tests passed!

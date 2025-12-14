@@ -1,0 +1,8 @@
+{
+    mod: 'structs',
+    main: 'main.nx',
+    permissions: {
+        compatIO: ['structs']
+    },
+    deps: []
+}
