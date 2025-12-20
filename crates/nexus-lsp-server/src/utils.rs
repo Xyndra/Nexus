@@ -78,6 +78,10 @@ pub fn span_to_range(content: &str, span: &Span) -> Range {
 /// the span. Blank lines terminate the doc comment block - comments
 /// separated by blank lines are NOT joined together.
 pub fn extract_doc_comment(content: &str, span: &Span) -> String {
+    // Guard against out-of-bounds span (can happen with spans from different files)
+    if span.start > content.len() {
+        return String::new();
+    }
     let before_span = &content[..span.start];
     let lines: Vec<&str> = before_span.lines().collect();
 

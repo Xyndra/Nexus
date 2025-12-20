@@ -121,7 +121,7 @@ fn discover_test_cases(resources_path: &Path) -> Vec<TestCase> {
         let mut input_files: Vec<PathBuf> = entries
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |ext| ext == "txt"))
+            .filter(|p| p.extension().is_some_and(|ext| ext == "txt"))
             .collect();
 
         input_files.sort();

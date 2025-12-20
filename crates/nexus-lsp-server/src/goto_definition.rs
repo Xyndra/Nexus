@@ -139,8 +139,8 @@ fn find_macro_in_all_documents(
     for (doc_uri, (content, ast_opt)) in documents {
         if let Some(ast) = ast_opt {
             for item in &ast.items {
-                if let Item::Macro(macro_def) = item {
-                    if macro_def.name == name {
+                if let Item::Macro(macro_def) = item
+                    && macro_def.name == name {
                         // The macro name starts after the $ sign
                         let name_start = macro_def.span.start + 1;
                         let name_end = name_start + macro_def.name.len();
@@ -155,7 +155,6 @@ fn find_macro_in_all_documents(
                             range: span_to_range(content, &name_span),
                         });
                     }
-                }
             }
         }
     }
@@ -191,13 +190,12 @@ fn find_variable_in_function(
                     return Some(loc);
                 }
                 // Check in else block
-                if let Some(else_clause) = &if_stmt.else_block {
-                    if let Some(loc) =
+                if let Some(else_clause) = &if_stmt.else_block
+                    && let Some(loc) =
                         find_variable_in_else_clause(uri, content, var_name, else_clause)
                     {
                         return Some(loc);
                     }
-                }
             }
             Statement::Subscope(subscope) => {
                 if let Some(loc) =
@@ -671,8 +669,8 @@ fn find_definition_in_expression(
             if offset >= name_start && offset < name_end {
                 // Try to find macro definition in current document
                 for item in &ast.items {
-                    if let Item::Macro(macro_def) = item {
-                        if macro_def.name == macro_call.name {
+                    if let Item::Macro(macro_def) = item
+                        && macro_def.name == macro_call.name {
                             let def_name_start = macro_def.span.start + 1;
                             let def_name_end = def_name_start + macro_def.name.len();
                             let name_span = nexus_core::Span {
@@ -686,7 +684,6 @@ fn find_definition_in_expression(
                                 range: span_to_range(content, &name_span),
                             });
                         }
-                    }
                 }
                 // Try to find in all documents
                 if let Some(loc) = find_macro_in_all_documents(&macro_call.name, documents) {

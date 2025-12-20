@@ -719,14 +719,10 @@ int main(int argc, char** argv) {{
                         if let Some(qualified) =
                             self.function_to_module.get(&call.function).cloned()
                         {
-                            if let Some(nexus_type) =
+                            if let Some(NexusType::Array(arr)) =
                                 self.function_nexus_return_types.get(&qualified)
                             {
-                                if let NexusType::Array(arr) = nexus_type {
-                                    Some(self.nexus_type_to_c(&arr.element_type)?)
-                                } else {
-                                    None
-                                }
+                                Some(self.nexus_type_to_c(&arr.element_type)?)
                             } else {
                                 None
                             }
@@ -750,14 +746,12 @@ int main(int argc, char** argv) {{
                                 let struct_name = parts[i..].join("_");
                                 if let Some(struct_def) =
                                     self.type_registry.get_struct(&struct_name)
+                                    && let Some(field) = struct_def.get_field(&field_access.field)
+                                    && let NexusType::Array(arr) = &field.field_type
                                 {
-                                    if let Some(field) = struct_def.get_field(&field_access.field) {
-                                        if let NexusType::Array(arr) = &field.field_type {
-                                            found_elem_type =
-                                                Some(self.nexus_type_to_c(&arr.element_type)?);
-                                            break;
-                                        }
-                                    }
+                                    found_elem_type =
+                                        Some(self.nexus_type_to_c(&arr.element_type)?);
+                                    break;
                                 }
                             }
                             found_elem_type
@@ -867,10 +861,10 @@ int main(int argc, char** argv) {{
         let target = self.generate_expression(&assign.target)?;
 
         // If target is a variable, check if we have its array element type
-        if let Expression::Variable(var_ref) = &assign.target {
-            if let Some(elem_type) = self.array_element_types.get(&var_ref.name).cloned() {
-                self.expected_array_elem_type = Some(elem_type);
-            }
+        if let Expression::Variable(var_ref) = &assign.target
+            && let Some(elem_type) = self.array_element_types.get(&var_ref.name).cloned()
+        {
+            self.expected_array_elem_type = Some(elem_type);
         }
         let value = self.generate_expression(&assign.value)?;
         self.expected_array_elem_type = None;
@@ -1240,11 +1234,11 @@ int main(int argc, char** argv) {{
 
                 // Track the element type for the array variable based on what's being pushed
                 // This helps with type inference when indexing the array later
-                if let Expression::Variable(var_ref) = &args[0] {
-                    if !self.array_element_types.contains_key(&var_ref.name) {
-                        self.array_element_types
-                            .insert(var_ref.name.clone(), elem_type.clone());
-                    }
+                if let Expression::Variable(var_ref) = &args[0]
+                    && !self.array_element_types.contains_key(&var_ref.name)
+                {
+                    self.array_element_types
+                        .insert(var_ref.name.clone(), elem_type.clone());
                 }
 
                 // nx_array_push_sized modifies array in-place and fixes elem_size on first push
@@ -1603,13 +1597,12 @@ int main(int argc, char** argv) {{
                         let mut found_type = None;
                         for i in 2..parts.len() {
                             let struct_name = parts[i..].join("_");
-                            if let Some(struct_def) = self.type_registry.get_struct(&struct_name) {
-                                if let Some(field) = struct_def.get_field(&field_access.field) {
-                                    if let NexusType::Array(arr) = &field.field_type {
-                                        found_type = Some(self.nexus_type_to_c(&arr.element_type)?);
-                                        break;
-                                    }
-                                }
+                            if let Some(struct_def) = self.type_registry.get_struct(&struct_name)
+                                && let Some(field) = struct_def.get_field(&field_access.field)
+                                && let NexusType::Array(arr) = &field.field_type
+                            {
+                                found_type = Some(self.nexus_type_to_c(&arr.element_type)?);
+                                break;
                             }
                         }
                         found_type.unwrap_or_else(|| "int64_t".to_string())
@@ -1685,10 +1678,10 @@ int main(int argc, char** argv) {{
         if let Some(ref sd) = struct_def {
             for field in &sd.fields {
                 let resolved = self.resolve_type_expr(&field.ty);
-                if let NexusType::Array(arr) = &resolved {
-                    if let Ok(elem_type) = self.nexus_type_to_c(&arr.element_type) {
-                        field_elem_types.insert(field.name.clone(), elem_type);
-                    }
+                if let NexusType::Array(arr) = &resolved
+                    && let Ok(elem_type) = self.nexus_type_to_c(&arr.element_type)
+                {
+                    field_elem_types.insert(field.name.clone(), elem_type);
                 }
             }
         }
@@ -1710,24 +1703,24 @@ int main(int argc, char** argv) {{
         // Process fields with defaults that weren't explicitly provided
         if let Some(struct_def) = struct_def {
             for field in &struct_def.fields {
-                if !provided_fields.contains(&field.name) {
-                    if let Some(default_expr) = &field.default {
-                        // Generate a unique temporary variable for the default value
-                        let temp_var = format!(
-                            "_default_{}_{}_{}",
-                            init.name, field.name, self.temp_var_counter
-                        );
-                        self.temp_var_counter += 1;
-                        let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&field.ty))?;
-                        let default_value = self.generate_expression(default_expr)?;
+                if !provided_fields.contains(&field.name)
+                    && let Some(default_expr) = &field.default
+                {
+                    // Generate a unique temporary variable for the default value
+                    let temp_var = format!(
+                        "_default_{}_{}_{}",
+                        init.name, field.name, self.temp_var_counter
+                    );
+                    self.temp_var_counter += 1;
+                    let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&field.ty))?;
+                    let default_value = self.generate_expression(default_expr)?;
 
-                        // Add the temporary variable to the statement prelude (no semicolon, added when emitting)
-                        self.statement_prelude
-                            .push(format!("{} {} = {}", c_type, temp_var, default_value));
+                    // Add the temporary variable to the statement prelude (no semicolon, added when emitting)
+                    self.statement_prelude
+                        .push(format!("{} {} = {}", c_type, temp_var, default_value));
 
-                        // Use the temporary variable in the initializer
-                        fields.push(format!(".{} = {}", field.name, temp_var));
-                    }
+                    // Use the temporary variable in the initializer
+                    fields.push(format!(".{} = {}", field.name, temp_var));
                 }
             }
         }
@@ -2051,10 +2044,9 @@ int main(int argc, char** argv) {{
                                 let struct_name = parts[i..].join("_");
                                 if let Some(struct_def) =
                                     self.type_registry.get_struct(&struct_name)
+                                    && let Some(field) = struct_def.get_field(&field_access.field)
                                 {
-                                    if let Some(field) = struct_def.get_field(&field_access.field) {
-                                        return Ok(self.nexus_type_to_c(&field.field_type)?);
-                                    }
+                                    return self.nexus_type_to_c(&field.field_type);
                                 }
                             }
                         }
@@ -2067,44 +2059,41 @@ int main(int argc, char** argv) {{
                 let array_type = self.infer_c_type_from_expr(&index_expr.array)?;
 
                 // If we have variable type info for the array, look up the element type
-                if let Expression::Variable(var_ref) = index_expr.array.as_ref() {
-                    if let Some(_var_type) = self.variable_types.get(&var_ref.name).cloned() {
-                        // Check if it's nx_array - we need to look up the actual element type
-                        // The variable type should be stored with element type info
-                        // For now, check if we can find the element type from type registry
+                if let Expression::Variable(var_ref) = index_expr.array.as_ref()
+                    && let Some(_var_type) = self.variable_types.get(&var_ref.name).cloned()
+                {
+                    // Check if it's nx_array - we need to look up the actual element type
+                    // The variable type should be stored with element type info
+                    // For now, check if we can find the element type from type registry
 
-                        // Try to find from parameter types or tracked array element types
-                        if let Some(elem_type) = self.array_element_types.get(&var_ref.name) {
-                            return Ok(elem_type.clone());
-                        }
+                    // Try to find from parameter types or tracked array element types
+                    if let Some(elem_type) = self.array_element_types.get(&var_ref.name) {
+                        return Ok(elem_type.clone());
                     }
                 }
 
                 // Handle field access arrays (e.g., intersection.classes[i])
                 if let Expression::FieldAccess(field_access) = index_expr.array.as_ref() {
                     // Get the type of the object being accessed
-                    if let Expression::Variable(var_ref) = field_access.object.as_ref() {
-                        if let Some(var_type) = self.variable_types.get(&var_ref.name) {
-                            // If it's a struct, look up the field type
-                            if var_type.starts_with("nx_") {
-                                // Extract struct name from prefixed type (nx_module_StructName)
-                                // The struct name is the last part after the module prefix
-                                // Try to find a matching struct in the registry
-                                let parts: Vec<&str> = var_type.split('_').collect();
-                                // Try different combinations - the struct name could be at different positions
-                                for i in 2..parts.len() {
-                                    let struct_name = parts[i..].join("_");
-                                    if let Some(struct_def) =
-                                        self.type_registry.get_struct(&struct_name)
-                                    {
-                                        if let Some(field) =
-                                            struct_def.get_field(&field_access.field)
-                                        {
-                                            // If the field is an array, get the element type
-                                            if let NexusType::Array(arr) = &field.field_type {
-                                                return Ok(self.nexus_type_to_c(&arr.element_type)?);
-                                            }
-                                        }
+                    if let Expression::Variable(var_ref) = field_access.object.as_ref()
+                        && let Some(var_type) = self.variable_types.get(&var_ref.name)
+                    {
+                        // If it's a struct, look up the field type
+                        if var_type.starts_with("nx_") {
+                            // Extract struct name from prefixed type (nx_module_StructName)
+                            // The struct name is the last part after the module prefix
+                            // Try to find a matching struct in the registry
+                            let parts: Vec<&str> = var_type.split('_').collect();
+                            // Try different combinations - the struct name could be at different positions
+                            for i in 2..parts.len() {
+                                let struct_name = parts[i..].join("_");
+                                if let Some(struct_def) =
+                                    self.type_registry.get_struct(&struct_name)
+                                    && let Some(field) = struct_def.get_field(&field_access.field)
+                                {
+                                    // If the field is an array, get the element type
+                                    if let NexusType::Array(arr) = &field.field_type {
+                                        return self.nexus_type_to_c(&arr.element_type);
                                     }
                                 }
                             }

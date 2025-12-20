@@ -513,7 +513,7 @@ impl Interpreter {
                         .insert(symbol.clone(), module_path.to_string());
                     self.module_imported_symbols
                         .entry(self.current_module.clone())
-                        .or_insert_with(HashMap::new)
+                        .or_default()
                         .insert(symbol.clone(), module_path.to_string());
                 }
             }
@@ -576,7 +576,7 @@ impl Interpreter {
                 // Also store in per-module imports
                 self.module_imported_symbols
                     .entry(self.current_module.clone())
-                    .or_insert_with(HashMap::new)
+                    .or_default()
                     .insert(symbol.clone(), module_path.to_string());
             }
         }
@@ -637,7 +637,7 @@ impl Interpreter {
                 // Also store in per-module imports
                 self.module_imported_symbols
                     .entry(self.current_module.clone())
-                    .or_insert_with(HashMap::new)
+                    .or_default()
                     .insert(symbol.clone(), module_path.to_string());
             }
         }
@@ -693,7 +693,7 @@ impl Interpreter {
                 // Also store in per-module imports
                 self.module_imported_symbols
                     .entry(self.current_module.clone())
-                    .or_insert_with(HashMap::new)
+                    .or_default()
                     .insert(symbol.clone(), module_path.to_string());
             }
         }
@@ -1020,7 +1020,7 @@ impl Interpreter {
             // Check if it's a struct
             if let Value::Struct(instance) = &mut var.value {
                 // Convert the value to FieldValue and set it
-                let field_value = self.value_to_field_value(&value);
+                let field_value = Self::value_to_field_value(&value);
                 if !instance.set_field(&field.field, field_value) {
                     return Err(NexusError::RuntimeError {
                         message: format!("Unknown field: {}", field.field),
@@ -1459,18 +1459,17 @@ impl Interpreter {
                 args.push(value);
 
                 // Check if this parameter is mutable and the arg is a variable reference
-                if i < func.params.len() && func.params[i].mutable {
-                    if let Expression::Variable(var_ref) = arg {
-                        mutable_args.push((func.params[i].name.clone(), var_ref.name.clone()));
-                    }
+                if i < func.params.len()
+                    && func.params[i].mutable
+                    && let Expression::Variable(var_ref) = arg
+                {
+                    mutable_args.push((func.params[i].name.clone(), var_ref.name.clone()));
                 }
             }
             // Extract the module from the qualified name (everything except the last component)
-            let module = if let Some(last_dot) = qualified_name.rfind('.') {
-                Some(&qualified_name[..last_dot])
-            } else {
-                None
-            };
+            let module = qualified_name
+                .rfind('.')
+                .map(|last_dot| &qualified_name[..last_dot]);
             let (result, final_scope) =
                 self.call_function_in_module_with_scope(&func, args, call.span, module)?;
 
@@ -1947,21 +1946,21 @@ impl Interpreter {
         // Set explicitly initialized fields
         for field_init in &init.fields {
             let value = self.evaluate_expression(&field_init.value, scope)?;
-            let field_value = self.value_to_field_value(&value);
+            let field_value = Self::value_to_field_value(&value);
             instance.set_field(&field_init.name, field_value);
         }
 
         // Evaluate default values for uninitialized fields
         if let Some(struct_ast) = self.struct_defs.get(&init.name).cloned() {
             for (i, field_ast) in struct_ast.fields.iter().enumerate() {
-                if let Some(field_val) = instance.values.get(i) {
-                    if !field_val.is_set {
-                        // Field was not explicitly set, try to use default
-                        if let Some(default_expr) = &field_ast.default {
-                            let default_value = self.evaluate_expression(default_expr, scope)?;
-                            let field_value = self.value_to_field_value(&default_value);
-                            instance.set_field(&field_ast.name, field_value);
-                        }
+                if let Some(field_val) = instance.values.get(i)
+                    && !field_val.is_set
+                {
+                    // Field was not explicitly set, try to use default
+                    if let Some(default_expr) = &field_ast.default {
+                        let default_value = self.evaluate_expression(default_expr, scope)?;
+                        let field_value = Self::value_to_field_value(&default_value);
+                        instance.set_field(&field_ast.name, field_value);
                     }
                 }
             }
@@ -1971,7 +1970,7 @@ impl Interpreter {
     }
 
     /// Convert Value to FieldValue
-    fn value_to_field_value(&self, value: &Value) -> nexus_types::FieldValue {
+    fn value_to_field_value(value: &Value) -> nexus_types::FieldValue {
         match value {
             Value::I64(n) => nexus_types::FieldValue::I64(*n),
             Value::F64(n) => nexus_types::FieldValue::F64(*n),
@@ -1980,9 +1979,9 @@ impl Interpreter {
             Value::String(s) => nexus_types::FieldValue::String(s.clone()),
             Value::Bytes(b) => nexus_types::FieldValue::Bytes(b.clone()),
             Value::None => nexus_types::FieldValue::None,
-            Value::Array(arr) => nexus_types::FieldValue::Array(
-                arr.iter().map(|v| self.value_to_field_value(v)).collect(),
-            ),
+            Value::Array(arr) => {
+                nexus_types::FieldValue::Array(arr.iter().map(Self::value_to_field_value).collect())
+            }
             Value::Struct(s) => nexus_types::FieldValue::Struct(s.clone()),
             _ => nexus_types::FieldValue::Uninitialized,
         }
