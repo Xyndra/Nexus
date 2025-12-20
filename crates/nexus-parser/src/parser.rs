@@ -400,11 +400,20 @@ impl Parser {
     fn parse_parameter(&mut self) -> Result<Parameter, NexusError> {
         let start_span = self.current_span();
 
+        // Check for 'm' modifier indicating mutable parameter
+        let mutable = if self.check_identifier("m") {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         let ty = self.parse_type()?;
         let name = self.expect_identifier()?;
         let contracts = self.parse_contracts()?;
 
         Ok(Parameter {
+            mutable,
             name,
             ty,
             contracts,
@@ -660,6 +669,19 @@ impl Parser {
         }
 
         let name = self.expect_identifier()?;
+
+        // Validate that the variable name is not a valid modifier string
+        // This prevents confusing code like `m l = 5` where `l` could be misread as a modifier
+        if VarModifiers::parse(&name).is_some() {
+            return Err(NexusError::ParseError {
+                message: format!(
+                    "Variable name '{}' is invalid because it can be misinterpreted as variable modifiers. \
+                    Use a different name that is not composed solely of modifier characters (c, m, l, h, u, g).",
+                    name
+                ),
+                span: self.previous_span(),
+            });
+        }
 
         // Optional type annotation
         let ty = if self.check(TokenKind::Colon) {

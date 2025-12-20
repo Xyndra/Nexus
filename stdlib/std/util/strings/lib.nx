@@ -22,12 +22,12 @@ $format([dyn]rune template): macro {
             return
         }
 
-        c ch = template[@unchecked i]
+        c char = template[@unchecked i]
 
         // If we're inside a placeholder ${...}
         if (in_placeholder) {
             // Check for } end of placeholder
-            if (eqr(ch, "}"[0])) {
+            if (eqr(char, "}"[0])) {
                 // End of placeholder, add str(varname)
                 if (first) {
                     result = concat("str(", concat(placeholder_name, ")"))
@@ -39,14 +39,14 @@ $format([dyn]rune template): macro {
                 placeholder_name = ""
             } else {
                 // Accumulate placeholder name
-                placeholder_name = push(placeholder_name, ch)
+                placeholder_name = push(placeholder_name, char)
             }
             i = addi64(i, 1)
             goto parse
         }
 
         // Check for ${ start of placeholder
-        if (eqr(ch, "$"[0])) {
+        if (eqr(char, "$"[0])) {
             if (lti64(addi64(i, 1), template_len)) {
                 c next_ch = template[@unchecked addi64(i, 1)]
                 if (eqr(next_ch, "{"[0])) {
@@ -59,17 +59,17 @@ $format([dyn]rune template): macro {
                             if (gei64(k, lit_len)) {
                                 return
                             }
-                            c ech = current_literal[@unchecked k]
-                            if (eqr(ech, "\""[0])) {
+                            c echar = current_literal[@unchecked k]
+                            if (eqr(echar, "\""[0])) {
                                 escaped = concat(escaped, "\\\"")
                             } else {
-                                if (eqr(ech, "\\"[0])) {
+                                if (eqr(echar, "\\"[0])) {
                                     escaped = concat(escaped, "\\\\")
                                 } else {
-                                    if (eqr(ech, "\n"[0])) {
+                                    if (eqr(echar, "\n"[0])) {
                                         escaped = concat(escaped, "\\n")
                                     } else {
-                                        escaped = push(escaped, ech)
+                                        escaped = push(escaped, echar)
                                     }
                                 }
                             }
@@ -95,7 +95,7 @@ $format([dyn]rune template): macro {
         }
 
         // Regular character - accumulate literal
-        current_literal = push(current_literal, ch)
+        current_literal = push(current_literal, char)
         i = addi64(i, 1)
         goto parse
     }
@@ -109,17 +109,17 @@ $format([dyn]rune template): macro {
             if (gei64(k, lit_len)) {
                 return
             }
-            c ech = current_literal[@unchecked k]
-            if (eqr(ech, "\""[0])) {
+            c echar = current_literal[@unchecked k]
+            if (eqr(echar, "\""[0])) {
                 escaped = concat(escaped, "\\\"")
             } else {
-                if (eqr(ech, "\\"[0])) {
+                if (eqr(echar, "\\"[0])) {
                     escaped = concat(escaped, "\\\\")
                 } else {
-                    if (eqr(ech, "\n"[0])) {
+                    if (eqr(echar, "\n"[0])) {
                         escaped = concat(escaped, "\\n")
                     } else {
-                        escaped = push(escaped, ech)
+                        escaped = push(escaped, echar)
                     }
                 }
             }

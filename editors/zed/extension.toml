@@ -12,4 +12,4 @@ languages = ["Nexus"]
 
 [grammars.nexus]
 repository = "https://github.com/Xyndra/tree-sitter-nexus"
-rev = "82556ace28ec6faa742c06a85bbfa411288642da"
+rev = "fd79f80896b77c2ba513e7d891ff16dc8f9e97f6"

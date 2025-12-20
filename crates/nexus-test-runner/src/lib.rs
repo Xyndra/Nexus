@@ -333,6 +333,26 @@ impl TestRunner {
                 let source_path = path.join("main.nx");
                 let expected_path = path.join("expected.out");
                 let config_path = path.join("nexus.json5");
+                let resources_path = path.join("resources");
+
+                // Check for resources directory with test cases
+                if source_path.exists() && resources_path.exists() && resources_path.is_dir() {
+                    // Find test cases in resources directory
+                    let test_cases = self.discover_test_cases(&resources_path);
+                    if !test_cases.is_empty() {
+                        // Create a sample for each test case
+                        for tc in test_cases {
+                            samples.push(Sample {
+                                name: format!("{}::{}", name, tc.name),
+                                source_path: source_path.clone(),
+                                expected_path: tc.expected_path,
+                                is_project: config_path.exists(),
+                                input_path: Some(tc.input_path),
+                            });
+                        }
+                        continue;
+                    }
+                }
 
                 if source_path.exists() && expected_path.exists() {
                     samples.push(Sample {
@@ -340,6 +360,7 @@ impl TestRunner {
                         source_path,
                         expected_path,
                         is_project: config_path.exists(),
+                        input_path: None,
                     });
                 } else if self.config.verbose {
                     if !source_path.exists() {
@@ -353,6 +374,41 @@ impl TestRunner {
 
         samples.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(samples)
+    }
+
+    /// Discover test cases in a resources directory
+    /// Looks for pairs of files like: name.txt (input) and name.out (expected output)
+    fn discover_test_cases(&self, resources_path: &PathBuf) -> Vec<TestCase> {
+        let mut test_cases = Vec::new();
+
+        if let Ok(entries) = fs::read_dir(resources_path) {
+            // Collect all .txt files (inputs)
+            let mut input_files: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().map_or(false, |ext| ext == "txt"))
+                .collect();
+
+            input_files.sort();
+
+            for input_path in input_files {
+                let stem = input_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                let expected_path = resources_path.join(format!("{}.out", stem));
+
+                if expected_path.exists() {
+                    test_cases.push(TestCase {
+                        name: stem.to_string(),
+                        input_path,
+                        expected_path,
+                    });
+                }
+            }
+        }
+
+        test_cases
     }
 
     /// Run a single sample and return the result
@@ -381,7 +437,7 @@ impl TestRunner {
         } else {
             sample.source_path.clone()
         };
-        let actual = match self.run_via_cli(&run_path) {
+        let actual = match self.run_via_cli_with_input(&run_path, sample.input_path.as_ref()) {
             Ok(output) => output,
             Err(e) => {
                 return TestResult::error(
@@ -417,6 +473,13 @@ impl TestRunner {
         // Run C transpiler test if enabled
         if self.config.test_c_transpiler {
             result.c_result = self.run_c_transpiler_test(sample, &actual);
+
+            // If C transpiler test failed, mark the overall test as failed
+            if let Some(ref c_result) = result.c_result {
+                if !c_result.passed {
+                    result.passed = false;
+                }
+            }
         }
 
         result
@@ -628,17 +691,49 @@ impl TestRunner {
         )
     }
 
-    /// Run a Nexus program via the CLI binary
-    fn run_via_cli(&self, source_path: &PathBuf) -> Result<String, String> {
+    /// Run a Nexus program via the CLI binary with optional stdin input
+    fn run_via_cli_with_input(
+        &self,
+        source_path: &PathBuf,
+        input_path: Option<&PathBuf>,
+    ) -> Result<String, String> {
+        let stdin_data = if let Some(input) = input_path {
+            Some(
+                fs::read_to_string(input)
+                    .map_err(|e| format!("Failed to read input file: {}", e))?,
+            )
+        } else {
+            None
+        };
+
         let output = if let Some(ref binary) = self.config.cli_binary {
             // Use the specified binary
-            Command::new(binary)
-                .arg("run")
+            let mut cmd = Command::new(binary);
+            cmd.arg("run")
                 .arg(source_path)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .map_err(|e| format!("Failed to run CLI binary: {}", e))?
+                .stderr(Stdio::piped());
+
+            if stdin_data.is_some() {
+                cmd.stdin(Stdio::piped());
+            }
+
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to run CLI binary: {}", e))?;
+
+            if let Some(ref data) = stdin_data {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin
+                        .write_all(data.as_bytes())
+                        .map_err(|e| format!("Failed to write to stdin: {}", e))?;
+                }
+            }
+
+            child
+                .wait_with_output()
+                .map_err(|e| format!("Failed to wait for CLI binary: {}", e))?
         } else {
             // Use cargo run
             let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -647,14 +742,33 @@ impl TestRunner {
                 .and_then(|p| p.parent())
                 .ok_or("Failed to find workspace root")?;
 
-            Command::new("cargo")
-                .current_dir(workspace_root)
+            let mut cmd = Command::new("cargo");
+            cmd.current_dir(workspace_root)
                 .args(["run", "-q", "-p", "nexus-cli", "--", "run"])
                 .arg(source_path)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-                .map_err(|e| format!("Failed to run cargo: {}", e))?
+                .stderr(Stdio::piped());
+
+            if stdin_data.is_some() {
+                cmd.stdin(Stdio::piped());
+            }
+
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("Failed to run cargo: {}", e))?;
+
+            if let Some(ref data) = stdin_data {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin
+                        .write_all(data.as_bytes())
+                        .map_err(|e| format!("Failed to write to stdin: {}", e))?;
+                }
+            }
+
+            child
+                .wait_with_output()
+                .map_err(|e| format!("Failed to wait for cargo: {}", e))?
         };
 
         if output.status.success() {
@@ -759,6 +873,16 @@ struct Sample {
     source_path: PathBuf,
     expected_path: PathBuf,
     is_project: bool,
+    /// Optional input file to pipe to stdin
+    input_path: Option<PathBuf>,
+}
+
+/// A test case within a sample (for samples with resources directory)
+#[derive(Debug, Clone)]
+struct TestCase {
+    name: String,
+    input_path: PathBuf,
+    expected_path: PathBuf,
 }
 
 /// Normalize output for comparison (handle line endings)

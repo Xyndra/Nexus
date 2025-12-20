@@ -2,7 +2,7 @@
     mod: 'conditionals',
     main: 'main.nx',
     permissions: {
-        compatIO: ['conditionals']
+        "compat.io": ['conditionals']
     },
     deps: []
 }

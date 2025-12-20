@@ -2,7 +2,7 @@
     mod: 'format_macro',
     main: 'main.nx',
     permissions: {
-        compatIO: ['format_macro']
+        "compat.io": ['format_macro']
     },
     deps: []
 }

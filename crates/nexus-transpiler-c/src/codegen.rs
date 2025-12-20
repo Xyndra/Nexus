@@ -19,6 +19,7 @@ pub struct CCodeGenerator<'a> {
     output: String,
     indent_level: usize,
     includes: HashSet<String>,
+    struct_decls: Vec<String>,
     forward_decls: Vec<String>,
     global_vars: Vec<String>,
     function_impls: Vec<String>,
@@ -28,8 +29,10 @@ pub struct CCodeGenerator<'a> {
     function_to_module: HashMap<String, String>,
     /// Mapping from (module_name, function_name) to qualified name for disambiguation
     module_function_map: HashMap<(String, String), String>,
-    /// Mapping from function name to return type
+    /// Mapping from function name to return type (C type string)
     function_return_types: HashMap<String, String>,
+    /// Mapping from function name to NexusType (for extracting array element types)
+    function_nexus_return_types: HashMap<String, NexusType>,
     /// Current module being generated
     current_module: String,
     builtins: BuiltinRegistry,
@@ -37,9 +40,19 @@ pub struct CCodeGenerator<'a> {
     subscope_depth: usize,
     macro_context: Option<MacroExpansionContext>,
     variable_types: std::collections::HashMap<String, String>,
+    /// Track element types for array variables
+    array_element_types: std::collections::HashMap<String, String>,
+    /// Track which parameters are mutable (passed by pointer) in current function
+    mutable_params: std::collections::HashSet<String>,
+    /// Track which parameters are mutable for each function (qualified_name -> param_index set)
+    function_mutable_params: HashMap<String, Vec<bool>>,
     statement_prelude: Vec<String>,
     /// Struct definitions for default value generation
     struct_defs: HashMap<String, StructDefAst>,
+    /// Expected element type for empty array generation (set before generating array expr)
+    expected_array_elem_type: Option<String>,
+    /// Current function's array element type (if function returns an array)
+    current_function_array_elem_type: Option<String>,
 }
 
 impl<'a> CCodeGenerator<'a> {
@@ -50,6 +63,7 @@ impl<'a> CCodeGenerator<'a> {
             output: String::new(),
             indent_level: 0,
             includes: HashSet::new(),
+            struct_decls: Vec::new(),
             forward_decls: Vec::new(),
             global_vars: Vec::new(),
             function_impls: Vec::new(),
@@ -58,14 +72,20 @@ impl<'a> CCodeGenerator<'a> {
             function_to_module: HashMap::new(),
             module_function_map: HashMap::new(),
             function_return_types: HashMap::new(),
+            function_nexus_return_types: HashMap::new(),
             current_module: String::new(),
             builtins: BuiltinRegistry::new(),
             interpreter: None,
             subscope_depth: 0,
             macro_context: None,
             variable_types: std::collections::HashMap::new(),
+            array_element_types: std::collections::HashMap::new(),
+            mutable_params: std::collections::HashSet::new(),
+            function_mutable_params: HashMap::new(),
             statement_prelude: Vec::new(),
             struct_defs: HashMap::new(),
+            expected_array_elem_type: None,
+            current_function_array_elem_type: None,
         }
     }
 
@@ -112,9 +132,24 @@ impl<'a> CCodeGenerator<'a> {
             all_programs.iter().copied(),
         ));
 
+        // Generate struct declarations from ALL modules first
+        // This ensures forward declarations can reference struct types from any module
+        let original_module = self.current_module.clone();
+        for (other_module_name, other_program) in all_module_info {
+            // Temporarily switch current_module so struct prefixing uses the correct module
+            self.current_module = other_module_name.clone();
+            for item in &other_program.items {
+                if let Item::Struct(struct_def) = item {
+                    self.generate_struct(struct_def)?;
+                }
+            }
+        }
+
         // Generate forward declarations for ALL functions from ALL modules
         // and populate function_to_module mapping
         for (other_module_name, other_program) in all_module_info {
+            // Temporarily switch current_module so struct prefixing uses the correct module
+            self.current_module = other_module_name.clone();
             for item in &other_program.items {
                 if let Item::Function(func) = item {
                     self.generate_function_forward_decl(func, other_module_name)?;
@@ -132,22 +167,30 @@ impl<'a> CCodeGenerator<'a> {
                     );
 
                     // Store return type for type inference
-                    let return_type =
-                        self.nexus_type_to_c(&self.resolve_type_expr(&func.return_type))?;
+                    let resolved_return_type = self.resolve_type_expr(&func.return_type);
+                    let return_type = self.nexus_type_to_c(&resolved_return_type)?;
                     self.function_return_types
-                        .insert(qualified_name, return_type);
+                        .insert(qualified_name.clone(), return_type);
+                    // Also store the NexusType for array element type extraction
+                    self.function_nexus_return_types
+                        .insert(qualified_name, resolved_return_type);
                 }
             }
         }
+        // Restore original module
+        self.current_module = original_module;
 
         // Generate implementations for THIS module
+        // (Structs are already generated above for all modules)
         for item in &program.items {
             match item {
                 Item::Function(func) => {
                     self.generate_function_impl(func, module_name)?;
                 }
                 Item::Method(method) => self.generate_method(method)?,
-                Item::Struct(struct_def) => self.generate_struct(struct_def)?,
+                Item::Struct(_) => {
+                    // Structs already generated above for all modules
+                }
                 Item::Interface(_) => {
                     // Interfaces are not directly represented in C
                 }
@@ -187,6 +230,15 @@ impl<'a> CCodeGenerator<'a> {
             output.push_str(&format!("#include <{}>\n", include));
         }
         output.push('\n');
+
+        // Struct definitions (must come before function declarations)
+        if !self.struct_decls.is_empty() {
+            for decl in &self.struct_decls {
+                output.push_str(decl);
+                output.push('\n');
+            }
+            output.push('\n');
+        }
 
         // Forward declarations
         if !self.forward_decls.is_empty() {
@@ -234,7 +286,7 @@ impl<'a> CCodeGenerator<'a> {
 
         struct_code.push_str(&format!("}} {};\n", prefixed_name));
 
-        self.forward_decls.push(struct_code);
+        self.struct_decls.push(struct_code);
         Ok(())
     }
 
@@ -264,7 +316,12 @@ impl<'a> CCodeGenerator<'a> {
                 .iter()
                 .map(|p| {
                     let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&p.ty))?;
-                    Ok(format!("{} {}", c_type, self.sanitize_identifier(&p.name)))
+                    if p.mutable {
+                        // Mutable parameters are passed by pointer
+                        Ok(format!("{}* {}", c_type, self.sanitize_identifier(&p.name)))
+                    } else {
+                        Ok(format!("{} {}", c_type, self.sanitize_identifier(&p.name)))
+                    }
                 })
                 .collect::<NexusResult<Vec<_>>>()?;
             sig.push_str(&params.join(", "));
@@ -272,6 +329,12 @@ impl<'a> CCodeGenerator<'a> {
 
         sig.push(')');
         self.forward_decls.push(format!("{};\n", sig));
+
+        // Track which parameters are mutable for this function
+        let mutable_flags: Vec<bool> = func.params.iter().map(|p| p.mutable).collect();
+        self.function_mutable_params
+            .insert(func_name, mutable_flags);
+
         Ok(())
     }
 
@@ -280,11 +343,34 @@ impl<'a> CCodeGenerator<'a> {
         self.current_function_color = Some(func.color);
         self.temp_var_counter = 0;
 
+        // Track function return type's array element type (if it returns an array)
+        let resolved_return = self.resolve_type_expr(&func.return_type);
+        self.current_function_array_elem_type = if let NexusType::Array(arr) = &resolved_return {
+            Some(self.nexus_type_to_c(&arr.element_type)?)
+        } else {
+            None
+        };
+
         // Clear and populate variable types for this function's parameters
         self.variable_types.clear();
+        self.array_element_types.clear();
+        self.mutable_params.clear();
         for param in &func.params {
-            let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&param.ty))?;
+            let param_type = self.resolve_type_expr(&param.ty);
+            let c_type = self.nexus_type_to_c(&param_type)?;
             self.variable_types.insert(param.name.clone(), c_type);
+
+            // Track mutable parameters
+            if param.mutable {
+                self.mutable_params.insert(param.name.clone());
+            }
+
+            // Track array element types for type inference
+            if let NexusType::Array(arr) = &param_type {
+                let elem_c_type = self.nexus_type_to_c(&arr.element_type)?;
+                self.array_element_types
+                    .insert(param.name.clone(), elem_c_type);
+            }
         }
 
         // Always use module-qualified names for all functions
@@ -301,7 +387,12 @@ impl<'a> CCodeGenerator<'a> {
                 .iter()
                 .map(|p| {
                     let c_type = self.nexus_type_to_c(&self.resolve_type_expr(&p.ty))?;
-                    Ok(format!("{} {}", c_type, self.sanitize_identifier(&p.name)))
+                    if p.mutable {
+                        // Mutable parameters are passed by pointer
+                        Ok(format!("{}* {}", c_type, self.sanitize_identifier(&p.name)))
+                    } else {
+                        Ok(format!("{} {}", c_type, self.sanitize_identifier(&p.name)))
+                    }
                 })
                 .collect::<NexusResult<Vec<_>>>()?;
             sig.push_str(&params.join(", "));
@@ -320,6 +411,7 @@ impl<'a> CCodeGenerator<'a> {
 
         self.function_impls.push(func_impl);
         self.current_function_color = None;
+        self.current_function_array_elem_type = None;
 
         Ok(())
     }
@@ -498,19 +590,66 @@ int main(int argc, char** argv) {{
     /// Generate variable declaration
     fn generate_var_decl(&mut self, decl: &VarDecl) -> NexusResult<String> {
         // Track variable type for later use
-        let (var_type, array_suffix) = if let Some(ty_expr) = &decl.ty {
-            (
-                self.nexus_type_to_c(&self.resolve_type_expr(ty_expr))?,
-                String::new(),
-            )
+        let (var_type, array_suffix, elem_type_opt) = if let Some(ty_expr) = &decl.ty {
+            let resolved = self.resolve_type_expr(ty_expr);
+            let elem_type = if let NexusType::Array(arr) = &resolved {
+                Some(self.nexus_type_to_c(&arr.element_type)?)
+            } else {
+                None
+            };
+            (self.nexus_type_to_c(&resolved)?, String::new(), elem_type)
         } else {
             // Type inference - determine type from initializer
             // Special handling for arrays
-            if let Expression::Array(_arr) = &decl.init {
+            if let Expression::Array(arr) = &decl.init {
                 // Arrays are always nx_array type
-                ("nx_array".to_string(), String::new())
+                // Try to infer element type from first element
+                let elem_type = if !arr.elements.is_empty() {
+                    Some(self.infer_c_type_from_expr(&arr.elements[0])?)
+                } else {
+                    // For empty arrays without type annotation, we can't determine element type here
+                    // The type will be determined later when elements are pushed
+                    None
+                };
+                ("nx_array".to_string(), String::new(), elem_type)
+            } else if let Expression::Call(call) = &decl.init {
+                // Check if this is a function that returns an array with known element type
+                let var_type = self.infer_c_type_from_expr(&decl.init)?;
+                let elem_type = match call.function.as_str() {
+                    // getargs returns array of strings
+                    "getargs" | "nx_getargs" | "nx_compat_args" | "args" => {
+                        Some("nx_string".to_string())
+                    }
+                    // split returns array of strings
+                    "split" | "nx_builtin_split" => Some("nx_string".to_string()),
+                    _ => {
+                        // Extract element type from function's NexusType return type
+                        if let Some(qualified) =
+                            self.function_to_module.get(&call.function).cloned()
+                        {
+                            if let Some(nexus_type) =
+                                self.function_nexus_return_types.get(&qualified)
+                            {
+                                if let NexusType::Array(arr) = nexus_type {
+                                    Some(self.nexus_type_to_c(&arr.element_type)?)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                };
+                (var_type, String::new(), elem_type)
             } else {
-                (self.infer_c_type_from_expr(&decl.init)?, String::new())
+                (
+                    self.infer_c_type_from_expr(&decl.init)?,
+                    String::new(),
+                    None,
+                )
             }
         };
 
@@ -518,11 +657,22 @@ int main(int argc, char** argv) {{
         self.variable_types
             .insert(decl.name.clone(), var_type.clone());
 
+        // Track array element type if available
+        if let Some(ref elem_type) = elem_type_opt {
+            self.array_element_types
+                .insert(decl.name.clone(), elem_type.clone());
+        }
+
         let mut code = String::new();
 
         // Handle global modifier
         if decl.modifiers.global {
+            // Set expected element type for empty array generation
+            if let Some(ref elem_type) = elem_type_opt {
+                self.expected_array_elem_type = Some(elem_type.clone());
+            }
             let init_expr = format!(" = {}", self.generate_expression(&decl.init)?);
+            self.expected_array_elem_type = None;
 
             let global_var = format!(
                 "{} {}{}{};\n",
@@ -535,8 +685,13 @@ int main(int argc, char** argv) {{
             return Ok(String::new());
         }
 
+        // Set expected element type for empty array generation
+        if let Some(ref elem_type) = elem_type_opt {
+            self.expected_array_elem_type = Some(elem_type.clone());
+        }
         // Generate the initializer expression (may add to prelude)
         let init_expr = self.generate_expression(&decl.init)?;
+        self.expected_array_elem_type = None;
 
         // Drain prelude into a local variable to avoid borrow conflicts
         let prelude: Vec<String> = self.statement_prelude.drain(..).collect();
@@ -578,7 +733,15 @@ int main(int argc, char** argv) {{
     /// Generate assignment
     fn generate_assignment(&mut self, assign: &Assignment) -> NexusResult<String> {
         let target = self.generate_expression(&assign.target)?;
+
+        // If target is a variable, check if we have its array element type
+        if let Expression::Variable(var_ref) = &assign.target {
+            if let Some(elem_type) = self.array_element_types.get(&var_ref.name).cloned() {
+                self.expected_array_elem_type = Some(elem_type);
+            }
+        }
         let value = self.generate_expression(&assign.value)?;
+        self.expected_array_elem_type = None;
 
         let mut code = String::new();
         // Drain prelude into a local variable to avoid borrow conflicts
@@ -691,16 +854,11 @@ int main(int argc, char** argv) {{
         code.push_str(&self.indent("do {\n"));
 
         // Track that we're in a subscope
-        let was_in_subscope = self.in_subscope();
         self.enter_subscope();
 
         code.push_str(&self.generate_block(&subscope.body)?);
 
-        if was_in_subscope {
-            self.enter_subscope();
-        } else {
-            self.exit_subscope();
-        }
+        self.exit_subscope();
 
         code.push_str(&self.indent("} while (0);\n"));
 
@@ -711,7 +869,15 @@ int main(int argc, char** argv) {{
     fn generate_expression(&mut self, expr: &Expression) -> NexusResult<String> {
         match expr {
             Expression::Literal(lit) => self.generate_literal(lit),
-            Expression::Variable(var) => Ok(self.sanitize_identifier(&var.name)),
+            Expression::Variable(var) => {
+                let name = self.sanitize_identifier(&var.name);
+                if self.mutable_params.contains(&var.name) {
+                    // Mutable parameters are pointers, dereference them
+                    Ok(format!("(*{})", name))
+                } else {
+                    Ok(name)
+                }
+            }
             Expression::Call(call) => self.generate_call(call),
             Expression::MethodCall(method_call) => self.generate_method_call(method_call),
             Expression::MacroCall(macro_call) => self.generate_macro_call(macro_call),
@@ -762,26 +928,70 @@ int main(int argc, char** argv) {{
             return self.generate_builtin_call(&call.function, &call.args);
         }
 
-        // Regular function call - use module-qualified name if available
-        let args: Vec<String> = call
-            .args
-            .iter()
-            .map(|arg| self.generate_expression(arg))
-            .collect::<NexusResult<Vec<_>>>()?;
+        // Check if this is a compat.fs builtin
+        if self.builtins.get_compat_fs(&call.function).is_some() {
+            return self.generate_builtin_call(&call.function, &call.args);
+        }
+
+        // Check if this is a compat.proc builtin
+        if self.builtins.get_compat_proc(&call.function).is_some() {
+            return self.generate_builtin_call(&call.function, &call.args);
+        }
+
+        // Check if this is a plat.console builtin
+        if self.builtins.get_plat_console(&call.function).is_some() {
+            return self.generate_builtin_call(&call.function, &call.args);
+        }
 
         // First check if this function exists in the current module
-        let func_name = if let Some(qualified) = self
+        let (func_name, qualified_key) = if let Some(qualified) = self
             .module_function_map
             .get(&(self.current_module.clone(), call.function.clone()))
         {
             // Use the local module's version
-            format!("nx_{}", qualified)
+            (format!("nx_{}", qualified), qualified.clone())
         } else if let Some(qualified) = self.function_to_module.get(&call.function) {
             // Fall back to any module's version
-            format!("nx_{}", qualified)
+            (format!("nx_{}", qualified), qualified.clone())
         } else {
-            self.mangle_function_name(&call.function)
+            let mangled = self.mangle_function_name(&call.function);
+            (mangled.clone(), call.function.clone())
         };
+
+        // Get mutable parameter info for this function
+        let mutable_flags = self.function_mutable_params.get(&qualified_key).cloned();
+
+        // Regular function call - use module-qualified name if available
+        let args: Vec<String> = call
+            .args
+            .iter()
+            .enumerate()
+            .map(|(i, arg)| {
+                let is_mutable_param = mutable_flags
+                    .as_ref()
+                    .map(|flags| flags.get(i).copied().unwrap_or(false))
+                    .unwrap_or(false);
+
+                if is_mutable_param {
+                    // For mutable parameters, pass address of the variable
+                    if let Expression::Variable(var_ref) = arg {
+                        let name = self.sanitize_identifier(&var_ref.name);
+                        if self.mutable_params.contains(&var_ref.name) {
+                            // Already a pointer, just pass it through
+                            Ok(name)
+                        } else {
+                            // Take address of the variable
+                            Ok(format!("&({})", name))
+                        }
+                    } else {
+                        // For non-variable expressions, generate normally (will be a temporary)
+                        self.generate_expression(arg)
+                    }
+                } else {
+                    self.generate_expression(arg)
+                }
+            })
+            .collect::<NexusResult<Vec<_>>>()?;
 
         Ok(format!("{}({})", func_name, args.join(", ")))
     }
@@ -884,6 +1094,48 @@ int main(int argc, char** argv) {{
                 }
                 let arg = self.generate_expression(&args[0])?;
                 Ok(format!("nx_array_len(&({}))", arg))
+            }
+
+            "push" => {
+                if args.len() != 2 {
+                    return Err(NexusError::TranspileError {
+                        message: "push expects 2 arguments".to_string(),
+                    });
+                }
+                let array = self.generate_expression(&args[0])?;
+                let value = self.generate_expression(&args[1])?;
+                let elem_type = self.infer_c_type_from_expr(&args[1])?;
+
+                // Track the element type for the array variable based on what's being pushed
+                // This helps with type inference when indexing the array later
+                if let Expression::Variable(var_ref) = &args[0] {
+                    if !self.array_element_types.contains_key(&var_ref.name) {
+                        self.array_element_types
+                            .insert(var_ref.name.clone(), elem_type.clone());
+                    }
+                }
+
+                // nx_array_push_sized modifies array in-place and fixes elem_size on first push
+                // Store the value in a temp variable to get its address
+                let val_temp = format!("_push_val_{}", self.temp_var_counter);
+                self.temp_var_counter += 1;
+                self.statement_prelude
+                    .push(format!("{} {} = {}", elem_type, val_temp, value));
+                self.statement_prelude.push(format!(
+                    "nx_array_push_sized(&({}), &{}, sizeof({}))",
+                    array, val_temp, elem_type
+                ));
+                Ok(array)
+            }
+
+            "pop" => {
+                if args.len() != 1 {
+                    return Err(NexusError::TranspileError {
+                        message: "pop expects 1 argument".to_string(),
+                    });
+                }
+                let array = self.generate_expression(&args[0])?;
+                Ok(format!("nx_array_pop(&({}))", array))
             }
 
             // String operations
@@ -1092,10 +1344,41 @@ int main(int argc, char** argv) {{
             // This looks like a module-qualified call
             // Generate as: module_function(args) instead of function(&(module), args)
             let qualified_name = format!("{}_{}", var_ref.name, call.method);
-            let mut args = Vec::new();
-            for arg in &call.args {
-                args.push(self.generate_expression(arg)?);
-            }
+
+            // Get mutable parameter info for this function
+            let mutable_flags = self.function_mutable_params.get(&qualified_name).cloned();
+
+            let args: Vec<String> = call
+                .args
+                .iter()
+                .enumerate()
+                .map(|(i, arg)| {
+                    let is_mutable_param = mutable_flags
+                        .as_ref()
+                        .map(|flags| flags.get(i).copied().unwrap_or(false))
+                        .unwrap_or(false);
+
+                    if is_mutable_param {
+                        // For mutable parameters, pass address of the variable
+                        if let Expression::Variable(arg_var_ref) = arg {
+                            let name = self.sanitize_identifier(&arg_var_ref.name);
+                            if self.mutable_params.contains(&arg_var_ref.name) {
+                                // Already a pointer, just pass it through
+                                Ok(name)
+                            } else {
+                                // Take address of the variable
+                                Ok(format!("&({})", name))
+                            }
+                        } else {
+                            // For non-variable expressions, generate normally
+                            self.generate_expression(arg)
+                        }
+                    } else {
+                        self.generate_expression(arg)
+                    }
+                })
+                .collect::<NexusResult<Vec<_>>>()?;
+
             return Ok(format!("nx_{}({})", qualified_name, args.join(", ")));
         }
 
@@ -1172,10 +1455,47 @@ int main(int argc, char** argv) {{
         let array = self.generate_expression(&index.array)?;
         let idx = self.generate_expression(&index.index)?;
 
+        // Try to get the element type from tracked array element types
+        let elem_type = if let Expression::Variable(var_ref) = &index.array.as_ref() {
+            self.array_element_types
+                .get(&var_ref.name)
+                .cloned()
+                .unwrap_or_else(|| "int64_t".to_string())
+        } else if let Expression::FieldAccess(field_access) = &index.array.as_ref() {
+            // Handle field access arrays (e.g., intersection.classes[i])
+            if let Expression::Variable(var_ref) = field_access.object.as_ref() {
+                if let Some(var_type) = self.variable_types.get(&var_ref.name) {
+                    if var_type.starts_with("nx_") {
+                        // Try to find the struct and field type
+                        let parts: Vec<&str> = var_type.split('_').collect();
+                        let mut found_type = None;
+                        for i in 2..parts.len() {
+                            let struct_name = parts[i..].join("_");
+                            if let Some(struct_def) = self.type_registry.get_struct(&struct_name) {
+                                if let Some(field) = struct_def.get_field(&field_access.field) {
+                                    if let NexusType::Array(arr) = &field.field_type {
+                                        found_type = Some(self.nexus_type_to_c(&arr.element_type)?);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        found_type.unwrap_or_else(|| "int64_t".to_string())
+                    } else {
+                        "int64_t".to_string()
+                    }
+                } else {
+                    "int64_t".to_string()
+                }
+            } else {
+                "int64_t".to_string()
+            }
+        } else {
+            "int64_t".to_string()
+        };
+
         if self.config.bounds_checking && !index.unchecked {
             // For bounds-checked access, nx_array_get_checked returns void* which we need to cast and dereference
-            // Default to int64_t for now; ideally we'd track the element type
-            let elem_type = "int64_t";
             Ok(format!(
                 "*(({}*)nx_array_get_checked(&({}), {}))",
                 elem_type, array, idx
@@ -1183,8 +1503,6 @@ int main(int argc, char** argv) {{
         } else {
             // For unchecked access, directly access the data pointer
             // Arrays are nx_array structs, so we need to access .data and cast appropriately
-            // Default to int64_t for now; ideally we'd track the element type
-            let elem_type = "int64_t";
             Ok(format!("(({}*)({}).data)[{}]", elem_type, array, idx))
         }
     }
@@ -1192,7 +1510,10 @@ int main(int argc, char** argv) {{
     /// Generate array literal
     fn generate_array(&mut self, array: &ArrayExpr) -> NexusResult<String> {
         if array.elements.is_empty() {
-            // Return empty dynamic array
+            // Use expected element type if available, otherwise default to void*
+            if let Some(ref elem_type) = self.expected_array_elem_type {
+                return Ok(format!("nx_array_new(sizeof({}))", elem_type));
+            }
             return Ok("nx_array_new(sizeof(void*))".to_string());
         }
 
@@ -1224,15 +1545,33 @@ int main(int argc, char** argv) {{
     fn generate_struct_init(&mut self, init: &StructInitExpr) -> NexusResult<String> {
         let mut fields = Vec::new();
 
-        // Get the struct definition to access default values
+        // Get the struct definition to access default values and field types
         let struct_def = self.struct_defs.get(&init.name).cloned();
+
+        // Build a map of field name -> element type for array fields
+        let mut field_elem_types: HashMap<String, String> = HashMap::new();
+        if let Some(ref sd) = struct_def {
+            for field in &sd.fields {
+                let resolved = self.resolve_type_expr(&field.ty);
+                if let NexusType::Array(arr) = &resolved {
+                    if let Ok(elem_type) = self.nexus_type_to_c(&arr.element_type) {
+                        field_elem_types.insert(field.name.clone(), elem_type);
+                    }
+                }
+            }
+        }
 
         // Collect explicitly provided field names
         let provided_fields: HashSet<String> = init.fields.iter().map(|f| f.name.clone()).collect();
 
         // Process explicitly provided fields
         for field_init in &init.fields {
+            // Set expected element type if this field is an array
+            if let Some(elem_type) = field_elem_types.get(&field_init.name) {
+                self.expected_array_elem_type = Some(elem_type.clone());
+            }
             let value = self.generate_expression(&field_init.value)?;
+            self.expected_array_elem_type = None;
             fields.push(format!(".{} = {}", field_init.name, value));
         }
 
@@ -1358,8 +1697,22 @@ int main(int argc, char** argv) {{
             // compat.io functions
             "print" => "nx_compat_print".to_string(),
             "println" => "nx_compat_println".to_string(),
-            "readln" => "nx_compat_readln".to_string(),
-            "read_file" => "nx_compat_read_file".to_string(),
+
+            // plat.console functions
+            "readln" => "nx_plat_console_readln".to_string(),
+
+            // Builtin rune array functions (std - always available)
+            "parse_i64" => "nx_builtin_parse_i64".to_string(),
+            "split" => "nx_builtin_split".to_string(),
+            "trim" => "nx_builtin_trim".to_string(),
+            "starts_with" => "nx_builtin_starts_with".to_string(),
+            "ends_with" => "nx_builtin_ends_with".to_string(),
+            "is_empty" => "nx_builtin_is_empty".to_string(),
+            "join" => "nx_builtin_join".to_string(),
+            "eqs" => "nx_builtin_eqs".to_string(),
+
+            // compat.fs functions
+            "read_file" => "nx_read_file".to_string(),
             "write_file" => "nx_compat_write_file".to_string(),
             "file_exists" => "nx_compat_file_exists".to_string(),
 
@@ -1370,6 +1723,7 @@ int main(int argc, char** argv) {{
             // compat.process functions
             "exit" => "nx_compat_exit".to_string(),
             "getenv" => "nx_compat_getenv".to_string(),
+            "getargs" => "nx_getargs".to_string(),
             "args" => "nx_compat_args".to_string(),
 
             // plat functions
@@ -1438,11 +1792,78 @@ int main(int argc, char** argv) {{
             Expression::Call(call) => {
                 // Infer return type based on known functions
                 match call.function.as_str() {
+                    // String-returning builtins
                     "concat"
                     | "str"
+                    | "trim"
+                    | "join"
                     | "nx_string_concat"
                     | "nx_string_from_value"
-                    | "nx_string_from_cstr" => Ok("nx_string".to_string()),
+                    | "nx_string_from_cstr"
+                    | "nx_builtin_trim"
+                    | "nx_builtin_join"
+                    | "read_file"
+                    | "nx_read_file"
+                    | "nx_compat_read_file"
+                    | "getenv"
+                    | "nx_compat_getenv" => Ok("nx_string".to_string()),
+
+                    // Array-returning builtins
+                    "split" | "nx_builtin_split" | "getargs" | "nx_getargs" | "nx_compat_args"
+                    | "args" => Ok("nx_array".to_string()),
+
+                    // Boolean-returning builtins
+                    "eqs"
+                    | "nx_builtin_eqs"
+                    | "starts_with"
+                    | "nx_builtin_starts_with"
+                    | "ends_with"
+                    | "nx_builtin_ends_with"
+                    | "is_empty"
+                    | "nx_builtin_is_empty"
+                    | "file_exists"
+                    | "nx_compat_file_exists"
+                    | "and"
+                    | "or"
+                    | "not"
+                    | "eqi64"
+                    | "nei64"
+                    | "lti64"
+                    | "lei64"
+                    | "gti64"
+                    | "gei64"
+                    | "eqi32"
+                    | "nei32"
+                    | "lti32"
+                    | "lei32"
+                    | "gti32"
+                    | "gei32"
+                    | "eqf64"
+                    | "nef64"
+                    | "ltf64"
+                    | "lef64"
+                    | "gtf64"
+                    | "gef64"
+                    | "eqf32"
+                    | "nef32"
+                    | "ltf32"
+                    | "lef32"
+                    | "gtf32"
+                    | "gef32" => Ok("bool".to_string()),
+
+                    // i64-returning builtins
+                    "parse_i64"
+                    | "nx_builtin_parse_i64"
+                    | "len"
+                    | "addi64"
+                    | "subi64"
+                    | "muli64"
+                    | "divi64"
+                    | "modi64"
+                    | "negi64"
+                    | "time_now_ms"
+                    | "nx_compat_time_now_ms" => Ok("int64_t".to_string()),
+
                     // Arithmetic operations that may involve floats
                     "addf64" | "subf64" | "mulf64" | "divf64" | "negf64" => {
                         Ok("double".to_string())
@@ -1492,9 +1913,10 @@ int main(int argc, char** argv) {{
                         // If it's a struct, look up the field type
                         if var_type.starts_with("nx_") {
                             // Extract struct name from prefixed type (nx_module_StructName)
+                            // Try different combinations since module name may contain underscores
                             let parts: Vec<&str> = var_type.split('_').collect();
-                            if parts.len() >= 3 {
-                                let struct_name = parts[2..].join("_");
+                            for i in 2..parts.len() {
+                                let struct_name = parts[i..].join("_");
                                 if let Some(struct_def) =
                                     self.type_registry.get_struct(&struct_name)
                                 {
@@ -1508,7 +1930,64 @@ int main(int argc, char** argv) {{
                 }
                 Ok("int64_t".to_string()) // Default fallback for field access
             }
-            _ => Ok("int64_t".to_string()), // Default fallback
+            Expression::Index(index_expr) => {
+                // Get the array type and extract element type
+                let array_type = self.infer_c_type_from_expr(&index_expr.array)?;
+
+                // If we have variable type info for the array, look up the element type
+                if let Expression::Variable(var_ref) = index_expr.array.as_ref() {
+                    if let Some(_var_type) = self.variable_types.get(&var_ref.name).cloned() {
+                        // Check if it's nx_array - we need to look up the actual element type
+                        // The variable type should be stored with element type info
+                        // For now, check if we can find the element type from type registry
+
+                        // Try to find from parameter types or tracked array element types
+                        if let Some(elem_type) = self.array_element_types.get(&var_ref.name) {
+                            return Ok(elem_type.clone());
+                        }
+                    }
+                }
+
+                // Handle field access arrays (e.g., intersection.classes[i])
+                if let Expression::FieldAccess(field_access) = index_expr.array.as_ref() {
+                    // Get the type of the object being accessed
+                    if let Expression::Variable(var_ref) = field_access.object.as_ref() {
+                        if let Some(var_type) = self.variable_types.get(&var_ref.name) {
+                            // If it's a struct, look up the field type
+                            if var_type.starts_with("nx_") {
+                                // Extract struct name from prefixed type (nx_module_StructName)
+                                // The struct name is the last part after the module prefix
+                                // Try to find a matching struct in the registry
+                                let parts: Vec<&str> = var_type.split('_').collect();
+                                // Try different combinations - the struct name could be at different positions
+                                for i in 2..parts.len() {
+                                    let struct_name = parts[i..].join("_");
+                                    if let Some(struct_def) =
+                                        self.type_registry.get_struct(&struct_name)
+                                    {
+                                        if let Some(field) =
+                                            struct_def.get_field(&field_access.field)
+                                        {
+                                            // If the field is an array, get the element type
+                                            if let NexusType::Array(arr) = &field.field_type {
+                                                return Ok(self.nexus_type_to_c(&arr.element_type)?);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Default - if it's an array, we don't know the element type
+                if array_type == "nx_array" {
+                    Ok("int64_t".to_string())
+                } else {
+                    Ok(array_type)
+                }
+            }
+            Expression::Lambda(_) => Ok("void*".to_string()), // Lambda/function pointer
         }
     }
 

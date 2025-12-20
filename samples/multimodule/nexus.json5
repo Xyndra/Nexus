@@ -1,7 +1,7 @@
 {
     mod: 'multimodule',
     permissions: {
-        compatIO: ['multimodule', 'util'],
+        "compat.io": ['multimodule', 'util'],
     },
     deps: [
         // Local dependencies - reference other modules by path

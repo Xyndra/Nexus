@@ -7,6 +7,16 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+/// Known permission keys that are valid in nexus.json5
+const KNOWN_PERMISSIONS: &[&str] = &[
+    "compat.io",
+    "compat.fs",
+    "compat.net",
+    "compat.proc",
+    "plat.console",
+    "plat.desktop",
+];
+
 /// Raw configuration as parsed from JSON5
 #[derive(Debug, Deserialize)]
 struct RawProjectConfig {
@@ -14,33 +24,13 @@ struct RawProjectConfig {
     #[serde(rename = "mod")]
     module: String,
 
-    /// Permissions configuration
+    /// Permissions configuration (HashMap to catch unknown keys)
     #[serde(default)]
-    permissions: RawPermissions,
+    permissions: HashMap<String, Vec<String>>,
 
     /// Dependencies list
     #[serde(default)]
     deps: Vec<String>,
-}
-
-/// Raw permissions as parsed from JSON5
-#[derive(Debug, Default, Deserialize)]
-struct RawPermissions {
-    /// Modules allowed to use compat.io
-    #[serde(rename = "compatIO", default)]
-    compat_io: Vec<String>,
-
-    /// Modules allowed to use compat.fs
-    #[serde(rename = "compatFS", default)]
-    compat_fs: Vec<String>,
-
-    /// Modules allowed to use compat.net
-    #[serde(rename = "compatNet", default)]
-    compat_net: Vec<String>,
-
-    /// Modules allowed to use plat functions
-    #[serde(rename = "plat", default)]
-    plat: Vec<String>,
 }
 
 /// Parsed and validated project configuration
@@ -68,8 +58,14 @@ pub struct ProjectPermissions {
     /// Modules allowed to use compat.net
     pub compat_net: Vec<String>,
 
-    /// Modules allowed to use platform-specific functions
-    pub plat: Vec<String>,
+    /// Modules allowed to use compat.proc
+    pub compat_proc: Vec<String>,
+
+    /// Modules allowed to use plat.console
+    pub plat_console: Vec<String>,
+
+    /// Modules allowed to use plat.desktop functions
+    pub plat_desktop: Vec<String>,
 }
 
 impl ProjectConfig {
@@ -88,6 +84,19 @@ impl ProjectConfig {
             message: format!("Failed to parse nexus.json5: {}", e),
         })?;
 
+        // Check for unknown permission keys
+        for key in raw.permissions.keys() {
+            if !KNOWN_PERMISSIONS.contains(&key.as_str()) {
+                return Err(NexusError::IoError {
+                    message: format!(
+                        "Unknown permission '{}' in nexus.json5. Valid permissions are: {}",
+                        key,
+                        KNOWN_PERMISSIONS.join(", ")
+                    ),
+                });
+            }
+        }
+
         // Parse dependencies
         let dependencies = raw
             .deps
@@ -98,10 +107,36 @@ impl ProjectConfig {
         Ok(ProjectConfig {
             module_name: raw.module,
             permissions: ProjectPermissions {
-                compat_io: raw.permissions.compat_io,
-                compat_fs: raw.permissions.compat_fs,
-                compat_net: raw.permissions.compat_net,
-                plat: raw.permissions.plat,
+                compat_io: raw
+                    .permissions
+                    .get("compat.io")
+                    .cloned()
+                    .unwrap_or_default(),
+                compat_fs: raw
+                    .permissions
+                    .get("compat.fs")
+                    .cloned()
+                    .unwrap_or_default(),
+                compat_net: raw
+                    .permissions
+                    .get("compat.net")
+                    .cloned()
+                    .unwrap_or_default(),
+                compat_proc: raw
+                    .permissions
+                    .get("compat.proc")
+                    .cloned()
+                    .unwrap_or_default(),
+                plat_console: raw
+                    .permissions
+                    .get("plat.console")
+                    .cloned()
+                    .unwrap_or_default(),
+                plat_desktop: raw
+                    .permissions
+                    .get("plat.desktop")
+                    .cloned()
+                    .unwrap_or_default(),
             },
             dependencies,
         })
@@ -122,9 +157,24 @@ impl ProjectConfig {
         self.permissions.compat_net.iter().any(|m| m == module)
     }
 
-    /// Check if a module has permission to use plat functions
+    /// Check if a module has permission to use compat.proc
+    pub fn has_compat_proc_permission(&self, module: &str) -> bool {
+        self.permissions.compat_proc.iter().any(|m| m == module)
+    }
+
+    /// Check if a module has permission to use plat.console
+    pub fn has_plat_console_permission(&self, module: &str) -> bool {
+        self.permissions.plat_console.iter().any(|m| m == module)
+    }
+
+    /// Check if a module has permission to use plat.desktop functions
+    pub fn has_plat_desktop_permission(&self, module: &str) -> bool {
+        self.permissions.plat_desktop.iter().any(|m| m == module)
+    }
+
+    /// Check if a module has permission to use any plat functions
     pub fn has_plat_permission(&self, module: &str) -> bool {
-        self.permissions.plat.iter().any(|m| m == module)
+        self.has_plat_console_permission(module) || self.has_plat_desktop_permission(module)
     }
 
     /// Get all modules that have any permissions
@@ -146,7 +196,17 @@ impl ProjectConfig {
                 modules.push(m);
             }
         }
-        for m in &self.permissions.plat {
+        for m in &self.permissions.compat_proc {
+            if !modules.contains(&m.as_str()) {
+                modules.push(m);
+            }
+        }
+        for m in &self.permissions.plat_console {
+            if !modules.contains(&m.as_str()) {
+                modules.push(m);
+            }
+        }
+        for m in &self.permissions.plat_desktop {
             if !modules.contains(&m.as_str()) {
                 modules.push(m);
             }
@@ -171,8 +231,23 @@ impl ProjectConfig {
                 self.permissions.compat_net.clone(),
             );
         }
-        if !self.permissions.plat.is_empty() {
-            map.insert("plat".to_string(), self.permissions.plat.clone());
+        if !self.permissions.compat_proc.is_empty() {
+            map.insert(
+                "compat.proc".to_string(),
+                self.permissions.compat_proc.clone(),
+            );
+        }
+        if !self.permissions.plat_console.is_empty() {
+            map.insert(
+                "plat.console".to_string(),
+                self.permissions.plat_console.clone(),
+            );
+        }
+        if !self.permissions.plat_desktop.is_empty() {
+            map.insert(
+                "plat.desktop".to_string(),
+                self.permissions.plat_desktop.clone(),
+            );
         }
 
         map
@@ -201,8 +276,8 @@ mod tests {
         let content = r#"{
             mod: 'myproject',
             permissions: {
-                compatIO: ['main', 'utils'],
-                compatFS: ['fileops']
+                "compat.io": ['main', 'utils'],
+                "compat.fs": ['fileops']
             },
             deps: []
         }"#;
@@ -212,6 +287,42 @@ mod tests {
         assert!(config.has_compat_io_permission("utils"));
         assert!(!config.has_compat_io_permission("other"));
         assert!(config.has_compat_fs_permission("fileops"));
+    }
+
+    #[test]
+    fn test_error_on_unknown_permission() {
+        let content = r#"{
+            mod: 'myproject',
+            permissions: {
+                "compatIO": ['main']
+            },
+            deps: []
+        }"#;
+
+        let result = ProjectConfig::parse_str(content);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            NexusError::IoError { message } => {
+                assert!(message.contains("Unknown permission"));
+                assert!(message.contains("compatIO"));
+            }
+            _ => panic!("Expected IoError, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_error_on_old_format() {
+        let content = r#"{
+            mod: 'myproject',
+            permissions: {
+                "compatFS": ['fileops']
+            },
+            deps: []
+        }"#;
+
+        let result = ProjectConfig::parse_str(content);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -234,8 +345,8 @@ mod tests {
         let content = r#"{
             mod: 'myproject',
             permissions: {
-                compatIO: ['main', 'utils'],
-                plat: ['native']
+                "compat.io": ['main', 'utils'],
+                "plat.console": ['native']
             },
             deps: []
         }"#;
@@ -247,7 +358,37 @@ mod tests {
             map.get("compat.io"),
             Some(&vec!["main".to_string(), "utils".to_string()])
         );
-        assert_eq!(map.get("plat"), Some(&vec!["native".to_string()]));
+        assert_eq!(map.get("plat.console"), Some(&vec!["native".to_string()]));
         assert!(!map.contains_key("compat.fs"));
+    }
+
+    #[test]
+    fn test_plat_console_permission() {
+        let content = r#"{
+            mod: 'myproject',
+            permissions: {
+                "plat.console": ['native']
+            },
+            deps: []
+        }"#;
+
+        let config = ProjectConfig::parse_str(content).unwrap();
+        assert!(config.has_plat_console_permission("native"));
+        assert!(config.has_plat_permission("native"));
+    }
+
+    #[test]
+    fn test_plat_desktop_permission() {
+        let content = r#"{
+            mod: 'myproject',
+            permissions: {
+                "plat.desktop": ['native']
+            },
+            deps: []
+        }"#;
+
+        let config = ProjectConfig::parse_str(content).unwrap();
+        assert!(config.has_plat_desktop_permission("native"));
+        assert!(config.has_plat_permission("native"));
     }
 }

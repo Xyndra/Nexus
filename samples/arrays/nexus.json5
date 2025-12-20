@@ -2,7 +2,7 @@
     mod: 'arrays',
     main: 'main.nx',
     permissions: {
-        compatIO: ['arrays']
+        "compat.io": ['arrays']
     },
     deps: []
 }

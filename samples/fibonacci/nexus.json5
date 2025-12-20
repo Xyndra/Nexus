@@ -2,7 +2,7 @@
     mod: 'fibonacci',
     main: 'main.nx',
     permissions: {
-        compatIO: ['fibonacci']
+        "compat.io": ['fibonacci']
     },
     deps: []
 }

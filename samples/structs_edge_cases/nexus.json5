@@ -2,7 +2,7 @@
     mod: 'structs_edge_cases',
     main: 'main.nx',
     permissions: {
-        compatIO: ['structs_edge_cases']
+        "compat.io": ['structs_edge_cases']
     },
     deps: []
 }

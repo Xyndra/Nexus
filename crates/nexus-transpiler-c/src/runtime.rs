@@ -38,6 +38,8 @@ pub fn generate_runtime(config: &TranspilerConfig) -> String {
 {}
 
 {}
+
+{}
 "#,
         include_str!("runtime_includes/memory.c"),
         include_str!("runtime_includes/array.c"),
@@ -48,6 +50,7 @@ pub fn generate_runtime(config: &TranspilerConfig) -> String {
         include_str!("runtime_includes/compat_time.c"),
         include_str!("runtime_includes/compat_process.c"),
         include_str!("runtime_includes/platform.c"),
+        include_str!("runtime_includes/std_builtins.c"),
     )
 }
 

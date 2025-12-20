@@ -2,7 +2,7 @@
     mod: 'hello',
     main: 'main.nx',
     permissions: {
-        compatIO: ['hello']
+        "compat.io": ['hello']
     },
     deps: []
 }

@@ -33,6 +33,30 @@ void nx_array_push(nx_array* arr, const void* elem) {
     arr->len++;
 }
 
+// Push with explicit element size - reinitializes array elem_size on first push if needed
+void nx_array_push_sized(nx_array* arr, const void* elem, size_t elem_size) {
+    // If array is empty and was created with wrong elem_size, fix it now
+    if (arr->len == 0 && arr->elem_size != elem_size) {
+        arr->elem_size = elem_size;
+        // Reallocate with correct element size if we have capacity
+        if (arr->cap > 0) {
+            arr->data = nx_realloc(arr->data, elem_size * arr->cap);
+        }
+    }
+    
+    if (arr->len >= arr->cap) {
+        size_t new_cap = arr->cap == 0 ? 8 : arr->cap * 2;
+        arr->data = nx_realloc(arr->data, arr->elem_size * new_cap);
+        arr->cap = new_cap;
+    }
+    #ifdef _WIN32
+        memcpy_s((char*)arr->data + (arr->len * arr->elem_size), arr->elem_size, elem, arr->elem_size);
+    #else
+        memcpy((char*)arr->data + (arr->len * arr->elem_size), elem, arr->elem_size);
+    #endif
+    arr->len++;
+}
+
 bool nx_array_pop(nx_array* arr, void* out_elem) {
     if (arr->len == 0) {
         return false;

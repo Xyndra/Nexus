@@ -147,6 +147,8 @@ pub struct MethodDef {
 /// Function/method parameter
 #[derive(Debug, Clone)]
 pub struct Parameter {
+    /// Whether this parameter is mutable
+    pub mutable: bool,
     /// Parameter name
     pub name: String,
     /// Parameter type

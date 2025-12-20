@@ -17,6 +17,10 @@
   "macro"
 ] @keyword
 
+; Mutable modifier in parameters and receivers
+(parameter "m" @keyword)
+(receiver "m" @keyword)
+
 ; Function colors (special keywords)
 (function_color) @keyword
 

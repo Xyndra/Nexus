@@ -18,7 +18,10 @@ use nexus_parser::{
     MacroCallExpr, MethodCallExpr, MethodDef, PatternBody, Program, ReturnStmt, Statement,
     StructDefAst, StructInitExpr, SubscopeStmt, UseStatement, VarDecl,
 };
-use nexus_permissions::{CompatPermission, Permission, PermissionManager, PermissionSet};
+use nexus_permissions::{
+    CompatPermission, DesktopX64Permission, Permission, PermissionManager, PermissionSet,
+    PlatPermission,
+};
 use nexus_types::{InterfaceDef, NexusType, StructDef, TypeRegistry};
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -84,6 +87,8 @@ pub struct Interpreter {
     current_module: String,
     /// Subscope depth counter (0 = not in a subscope)
     subscope_depth: usize,
+    /// Program arguments (stored for compat.proc.getargs)
+    program_args: Vec<Value>,
 }
 
 impl Interpreter {
@@ -118,6 +123,7 @@ impl Interpreter {
             current_color: FunctionColor::Std,
             current_module: "main".to_string(),
             subscope_depth: 0,
+            program_args: Vec::new(),
         }
     }
 
@@ -242,6 +248,11 @@ impl Interpreter {
             return self.process_compat_import(use_stmt, &module_path, is_module_import);
         }
 
+        // Check if this is a plat module
+        if module_path.starts_with("plat.") {
+            return self.process_plat_import(use_stmt, &module_path, is_module_import);
+        }
+
         // Check if this is a known dependency module
         if self.known_modules.contains(&module_path) {
             return self.process_module_import(use_stmt, &module_path, is_module_import);
@@ -264,6 +275,7 @@ impl Interpreter {
         let required_permission = match module_path {
             "compat.io" => Permission::Compat(CompatPermission::Io),
             "compat.fs" => Permission::Compat(CompatPermission::Fs),
+            "compat.proc" => Permission::Compat(CompatPermission::Process),
             "compat.net" => Permission::Compat(CompatPermission::Net),
             _ => {
                 return Err(NexusError::RuntimeError {
@@ -286,6 +298,64 @@ impl Interpreter {
             // Get available symbols for the module
             let available_symbols: &[&str] = match module_path {
                 "compat.io" => &["print", "println"],
+                "compat.fs" => &["read_file", "write_file", "file_exists"],
+                "compat.proc" => &["getargs", "exit", "getenv"],
+                _ => &[],
+            };
+
+            // Register the imported symbols
+            for symbol in &use_stmt.symbols {
+                if !available_symbols.contains(&symbol.as_str()) {
+                    return Err(NexusError::RuntimeError {
+                        message: format!(
+                            "Symbol '{}' not found in module '{}'",
+                            symbol, module_path
+                        ),
+                        span: Some(use_stmt.span),
+                    });
+                }
+                self.imported_symbols
+                    .insert(symbol.clone(), module_path.to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process an import from a plat module (e.g., plat.console)
+    fn process_plat_import(
+        &mut self,
+        use_stmt: &UseStatement,
+        module_path: &str,
+        is_module_import: bool,
+    ) -> NexusResult<()> {
+        // Check if the current module has permission to use this import
+        let required_permission = match module_path {
+            "plat.console" => Permission::Compat(CompatPermission::Console),
+            "plat.desktop" => {
+                Permission::Plat(PlatPermission::DesktopX64(DesktopX64Permission::All))
+            }
+            _ => {
+                return Err(NexusError::RuntimeError {
+                    message: format!("Unknown plat module: {}", module_path),
+                    span: Some(use_stmt.span),
+                });
+            }
+        };
+
+        self.permissions.check_permission(
+            &self.current_module,
+            &required_permission,
+            use_stmt.span,
+        )?;
+
+        if is_module_import {
+            // Module-level import: register the module for qualified access
+            self.imported_modules.insert(module_path.to_string());
+        } else {
+            // Get available symbols for the module
+            let available_symbols: &[&str] = match module_path {
+                "plat.console" => &["readln"],
                 _ => &[],
             };
 
@@ -432,11 +502,16 @@ impl Interpreter {
 
     /// Run the program by calling the main function in the current module
     pub fn run(&mut self) -> NexusResult<Value> {
+        self.run_with_args(Vec::new())
+    }
+
+    /// Run the program by calling the main function with arguments
+    pub fn run_with_args(&mut self, args: Vec<Value>) -> NexusResult<Value> {
         // Look for main function in the current module only
         let qualified_name = format!("{}.main", self.current_module);
         let main_func = self.functions.get(&qualified_name).cloned();
         match main_func {
-            Some(func) => self.call_function(&func, Vec::new(), Span::dummy()),
+            Some(func) => self.call_function(&func, args, Span::dummy()),
             None => Err(NexusError::UndefinedFunction {
                 name: format!("main (in module '{}')", self.current_module),
                 span: Span::dummy(),
@@ -980,6 +1055,98 @@ impl Interpreter {
             return func(&args, call.span);
         }
 
+        // Check compat.fs builtins (require import)
+        if let Some(builtin) = self.builtins.get_compat_fs(&call.function) {
+            // Check if the symbol was imported
+            if !self.imported_symbols.contains_key(&call.function) {
+                return Err(NexusError::RuntimeError {
+                    message: format!(
+                        "'{}' requires import: use {{ {} }} from compat.fs",
+                        call.function, call.function
+                    ),
+                    span: Some(call.span),
+                });
+            }
+            // Check color permissions - compat.fs builtins are compat color
+            self.permissions.check_color_call(
+                &self.current_module,
+                self.current_color,
+                FunctionColor::Compat,
+                &call.function,
+                call.span,
+            )?;
+            let func = builtin.func;
+            let mut args = Vec::new();
+            for arg in &call.args {
+                args.push(self.evaluate_expression(arg, scope)?);
+            }
+            return func(&args, call.span);
+        }
+
+        // Check compat.proc builtins (require import)
+        if let Some(builtin) = self.builtins.get_compat_proc(&call.function) {
+            // Check if the symbol was imported
+            if !self.imported_symbols.contains_key(&call.function) {
+                return Err(NexusError::RuntimeError {
+                    message: format!(
+                        "'{}' requires import: use {{ {} }} from compat.proc",
+                        call.function, call.function
+                    ),
+                    span: Some(call.span),
+                });
+            }
+            // Check color permissions - compat.proc builtins are compat color
+            self.permissions.check_color_call(
+                &self.current_module,
+                self.current_color,
+                FunctionColor::Compat,
+                &call.function,
+                call.span,
+            )?;
+
+            // Special handling for getargs - it needs access to interpreter state
+            if call.function == "getargs" {
+                // Return the stored program arguments as an array of rune arrays
+                return Ok(Value::Array(self.program_args.clone()));
+            }
+
+            // For other compat.proc builtins, call the function normally
+            let func = builtin.func;
+            let mut args = Vec::new();
+            for arg in &call.args {
+                args.push(self.evaluate_expression(arg, scope)?);
+            }
+            return func(&args, call.span);
+        }
+
+        // Check plat.console builtins (require import)
+        if let Some(builtin) = self.builtins.get_plat_console(&call.function) {
+            // Check if the symbol was imported
+            if !self.imported_symbols.contains_key(&call.function) {
+                return Err(NexusError::RuntimeError {
+                    message: format!(
+                        "'{}' requires import: use {{ {} }} from plat.console",
+                        call.function, call.function
+                    ),
+                    span: Some(call.span),
+                });
+            }
+            // Check color permissions - plat.console builtins are plat color
+            self.permissions.check_color_call(
+                &self.current_module,
+                self.current_color,
+                FunctionColor::Plat,
+                &call.function,
+                call.span,
+            )?;
+            let func = builtin.func;
+            let mut args = Vec::new();
+            for arg in &call.args {
+                args.push(self.evaluate_expression(arg, scope)?);
+            }
+            return func(&args, call.span);
+        }
+
         // Determine the qualified function name to look up
         // First check if this is an imported symbol
         let qualified_name = if let Some(source_module) = self.imported_symbols.get(&call.function)
@@ -1001,13 +1168,37 @@ impl Interpreter {
                 call.span,
             )?;
 
+            // Track mutable parameter variable names for copy-out semantics
+            let mut mutable_args: Vec<(String, String)> = Vec::new(); // (param_name, caller_var_name)
             let mut args = Vec::new();
-            for arg in &call.args {
-                args.push(self.evaluate_expression(arg, scope)?);
+            for (i, arg) in call.args.iter().enumerate() {
+                let value = self.evaluate_expression(arg, scope)?;
+                args.push(value);
+
+                // Check if this parameter is mutable and the arg is a variable reference
+                if i < func.params.len() && func.params[i].mutable {
+                    if let Expression::Variable(var_ref) = arg {
+                        mutable_args.push((func.params[i].name.clone(), var_ref.name.clone()));
+                    }
+                }
             }
-            // Extract the module from the qualified name
-            let module = qualified_name.split('.').next();
-            return self.call_function_in_module(&func, args, call.span, module);
+            // Extract the module from the qualified name (everything except the last component)
+            let module = if let Some(last_dot) = qualified_name.rfind('.') {
+                Some(&qualified_name[..last_dot])
+            } else {
+                None
+            };
+            let (result, final_scope) =
+                self.call_function_in_module_with_scope(&func, args, call.span, module)?;
+
+            // Copy-out: write back mutable parameter values to caller's variables
+            for (param_name, caller_var_name) in mutable_args {
+                if let Some(var) = final_scope.get(&param_name) {
+                    scope.assign(&caller_var_name, var.value.clone(), call.span)?;
+                }
+            }
+
+            return Ok(result);
         }
 
         Err(NexusError::UndefinedFunction {
@@ -1017,13 +1208,14 @@ impl Interpreter {
     }
 
     /// Call a function with arguments, optionally in a specific module context
-    fn call_function_in_module(
+    /// Returns the result and the final function scope (for mutable parameter writeback)
+    fn call_function_in_module_with_scope(
         &mut self,
         func: &FunctionDef,
         args: Vec<Value>,
         span: Span,
         module: Option<&str>,
-    ) -> NexusResult<Value> {
+    ) -> NexusResult<(Value, Scope)> {
         // Check recursion depth
         self.recursion_depth += 1;
         if self.recursion_depth > self.config.max_recursion_depth {
@@ -1052,7 +1244,10 @@ impl Interpreter {
             func_scope.define(Variable {
                 name: param.name.clone(),
                 value: arg,
-                modifiers: VarModifiers::default(),
+                modifiers: VarModifiers {
+                    mutable: param.mutable,
+                    ..VarModifiers::default()
+                },
                 span: param.span,
             })?;
         }
@@ -1066,7 +1261,19 @@ impl Interpreter {
         self.subscope_depth = prev_subscope_depth;
         self.recursion_depth -= 1;
 
-        result
+        result.map(|v| (v, func_scope))
+    }
+
+    /// Call a function with arguments, optionally in a specific module context
+    fn call_function_in_module(
+        &mut self,
+        func: &FunctionDef,
+        args: Vec<Value>,
+        span: Span,
+        module: Option<&str>,
+    ) -> NexusResult<Value> {
+        self.call_function_in_module_with_scope(func, args, span, module)
+            .map(|(v, _)| v)
     }
 
     /// Call a function with arguments (uses current module context)
@@ -1198,7 +1405,10 @@ impl Interpreter {
             method_scope.define(Variable {
                 name: param.name.clone(),
                 value: arg,
-                modifiers: VarModifiers::default(),
+                modifiers: VarModifiers {
+                    mutable: param.mutable,
+                    ..VarModifiers::default()
+                },
                 span: param.span,
             })?;
         }
@@ -1269,7 +1479,10 @@ impl Interpreter {
             macro_scope.define(Variable {
                 name: param.name.clone(),
                 value,
-                modifiers: VarModifiers::default(),
+                modifiers: VarModifiers {
+                    mutable: param.mutable,
+                    ..VarModifiers::default()
+                },
                 span: param.span,
             })?;
         }
@@ -1452,6 +1665,10 @@ impl Interpreter {
             Value::String(s) => nexus_types::FieldValue::String(s.clone()),
             Value::Bytes(b) => nexus_types::FieldValue::Bytes(b.clone()),
             Value::None => nexus_types::FieldValue::None,
+            Value::Array(arr) => nexus_types::FieldValue::Array(
+                arr.iter().map(|v| self.value_to_field_value(v)).collect(),
+            ),
+            Value::Struct(s) => nexus_types::FieldValue::Struct(s.clone()),
             _ => nexus_types::FieldValue::Uninitialized,
         }
     }
@@ -1504,6 +1721,16 @@ impl Interpreter {
     /// Set the current module
     pub fn set_current_module(&mut self, module: impl Into<String>) {
         self.current_module = module.into();
+    }
+
+    /// Set program arguments (for compat.proc.getargs)
+    pub fn set_args(&mut self, args: Vec<Value>) {
+        self.program_args = args;
+    }
+
+    /// Get program arguments (for compat.proc.getargs)
+    pub fn get_args(&self) -> &[Value] {
+        &self.program_args
     }
 
     /// Register a known module (dependency)

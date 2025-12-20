@@ -223,27 +223,57 @@ enum InferredType {
 }
 
 impl InferredType {
-    /// Convert a type name string to InferredType
+    /// Convert a type name string to InferredType.
+    /// Parses Nexus type syntax: primitives, `[dyn]T` or `[N]T` for arrays.
     fn from_type_name(name: &str) -> Self {
-        match name {
-            "i64" => InferredType::I64,
-            "i32" => InferredType::I32,
-            "i16" => InferredType::I16,
-            "i8" => InferredType::I8,
-            "u64" => InferredType::U64,
-            "u32" => InferredType::U32,
-            "u16" => InferredType::U16,
-            "u8" => InferredType::U8,
-            "f64" => InferredType::F64,
-            "f32" => InferredType::F32,
-            "bool" => InferredType::Bool,
-            "rune" => InferredType::Rune,
-            "string" | "[]rune" => InferredType::String,
-            "void" => InferredType::Void,
-            // "any" and "...any" (variadic) accept any type
-            "any" | "...any" => InferredType::Unknown,
-            _ => InferredType::Struct(name.to_string()),
+        let name = name.trim();
+
+        // Handle "any" and variadic "...any" - these accept any type
+        if name == "any" || name == "...any" {
+            return InferredType::Unknown;
         }
+
+        // Handle void
+        if name == "void" {
+            return InferredType::Void;
+        }
+
+        // Handle primitives
+        match name {
+            "i64" => return InferredType::I64,
+            "i32" => return InferredType::I32,
+            "i16" => return InferredType::I16,
+            "i8" => return InferredType::I8,
+            "u64" => return InferredType::U64,
+            "u32" => return InferredType::U32,
+            "u16" => return InferredType::U16,
+            "u8" => return InferredType::U8,
+            "f64" => return InferredType::F64,
+            "f32" => return InferredType::F32,
+            "bool" => return InferredType::Bool,
+            "rune" => return InferredType::Rune,
+            _ => {}
+        }
+
+        // Handle array types: [dyn]T or [N]T
+        // The syntax is: '[' followed by 'dyn' or a number, then ']', then element type
+        if name.starts_with('[') {
+            // Find the matching ']' for the first '['
+            if let Some(close_bracket) = name.find(']') {
+                let element_type_str = &name[close_bracket + 1..];
+                let element_type = Self::from_type_name(element_type_str);
+
+                // Special case: [dyn]rune or [N]rune is a string
+                if element_type == InferredType::Rune {
+                    return InferredType::String;
+                }
+
+                return InferredType::Array(Box::new(element_type));
+            }
+        }
+
+        // Default to struct/named type
+        InferredType::Struct(name.to_string())
     }
 
     /// Check if this type is compatible with another type
@@ -270,8 +300,8 @@ impl std::fmt::Display for InferredType {
             InferredType::F32 => write!(f, "f32"),
             InferredType::Bool => write!(f, "bool"),
             InferredType::Rune => write!(f, "rune"),
-            InferredType::String => write!(f, "string"),
-            InferredType::Array(elem) => write!(f, "[]{}", elem),
+            InferredType::String => write!(f, "[dyn]rune"),
+            InferredType::Array(elem) => write!(f, "[dyn]{}", elem),
             InferredType::Struct(name) => write!(f, "{}", name),
             InferredType::Void => write!(f, "void"),
             InferredType::Unknown => write!(f, "unknown"),
@@ -462,17 +492,8 @@ pub fn compute_diagnostics_with_context(
 /// Extract module identifier from URI by getting the directory path
 /// Files in the same directory belong to the same module
 fn extract_module_from_uri(uri: &str) -> String {
-    let path = uri
-        .strip_prefix("file:///")
-        .or_else(|| uri.strip_prefix("file://"))
-        .unwrap_or(uri);
-
-    // Get the directory path (everything before the last separator)
-    if let Some(last_sep) = path.rfind(|c| ['/', '\\'].contains(&c)) {
-        path[..last_sep].to_string()
-    } else {
-        path.to_string()
-    }
+    // Use the same logic as MacroContext::module_name_from_uri for consistency
+    MacroContext::module_name_from_uri(uri)
 }
 
 fn collect_imported_macros(program: &Program) -> HashSet<String> {
@@ -2593,7 +2614,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.message.contains("string") && d.message.contains("i64"))
+                .any(|d| d.message.contains("[dyn]rune") && d.message.contains("i64"))
         );
     }
 
@@ -2616,7 +2637,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.message.contains("string") && d.message.contains("i64"))
+                .any(|d| d.message.contains("[dyn]rune") && d.message.contains("i64"))
         );
     }
 

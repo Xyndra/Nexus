@@ -1,0 +1,228 @@
+// Standard library collection utilities
+// Module: std.collections
+//
+// Provides sorting, set operations, and other collection utilities.
+
+// ============================================================================
+// Sorting - Quicksort implementation for i64 arrays
+// ============================================================================
+
+// Sort an array of i64 values in ascending order (returns new sorted array)
+std sort_i64([dyn]i64 arr): [dyn]i64 {
+    c n = len(arr)
+    if (lei64(n, 1)) {
+        return arr
+    }
+
+    // Copy array to avoid mutating original
+    m result = []
+    m i: i64 = 0
+    subscope copy {
+        if (gei64(i, n)) {
+            return
+        }
+        result = push(result, arr[i])
+        i = addi64(i, 1)
+        goto copy
+    }
+
+    // In-place quicksort
+    quicksort_i64_impl(result, 0, subi64(n, 1))
+
+    return result
+}
+
+// Quicksort implementation helper (sorts in place)
+std quicksort_i64_impl(m [dyn]i64 arr, i64 low, i64 high): void {
+    if (lti64(low, high)) {
+        c pivot_idx = partition_i64(arr, low, high)
+        quicksort_i64_impl(arr, low, subi64(pivot_idx, 1))
+        quicksort_i64_impl(arr, addi64(pivot_idx, 1), high)
+    }
+}
+
+// Partition helper for quicksort
+std partition_i64(m [dyn]i64 arr, i64 low, i64 high): i64 {
+    c pivot = arr[high]
+    m i = subi64(low, 1)
+
+    m j = low
+    subscope partition_loop {
+        if (gei64(j, high)) {
+            return
+        }
+        if (lei64(arr[j], pivot)) {
+            i = addi64(i, 1)
+            // Swap arr[i] and arr[j]
+            c temp = arr[i]
+            arr[i] = arr[j]
+            arr[j] = temp
+        }
+        j = addi64(j, 1)
+        goto partition_loop
+    }
+
+    // Swap arr[i+1] and arr[high]
+    c final_idx = addi64(i, 1)
+    c temp = arr[final_idx]
+    arr[final_idx] = arr[high]
+    arr[high] = temp
+
+    return final_idx
+}
+
+// ============================================================================
+// Set Operations - Remove duplicates
+// ============================================================================
+
+// Remove duplicate i64 values from array (preserves order of first occurrence)
+std unique_i64([dyn]i64 arr): [dyn]i64 {
+    m result = []
+    c n = len(arr)
+
+    m i: i64 = 0
+    subscope outer {
+        if (gei64(i, n)) {
+            return
+        }
+        c val = arr[i]
+
+        // Check if val is already in result
+        m found = false
+        m j: i64 = 0
+        subscope check_dup {
+            if (gei64(j, len(result))) {
+                return
+            }
+            if (eqi64(result[j], val)) {
+                found = true
+                return
+            }
+            j = addi64(j, 1)
+            goto check_dup
+        }
+
+        if (not(found)) {
+            result = push(result, val)
+        }
+
+        i = addi64(i, 1)
+        goto outer
+    }
+
+    return result
+}
+
+// ============================================================================
+// Array Search
+// ============================================================================
+
+// Find index of first occurrence of value in i64 array (-1 if not found)
+std index_of_i64([dyn]i64 arr, i64 value): i64 {
+    c n = len(arr)
+    m i: i64 = 0
+    m found_idx: i64 = negi64(1)
+    subscope search {
+        if (gei64(i, n)) {
+            return
+        }
+        if (eqi64(arr[i], value)) {
+            found_idx = i
+            return
+        }
+        i = addi64(i, 1)
+        goto search
+    }
+    return found_idx
+}
+
+// Check if i64 array contains value
+std contains_i64([dyn]i64 arr, i64 value): bool {
+    return gei64(index_of_i64(arr, value), 0)
+}
+
+// ============================================================================
+// Array Aggregation
+// ============================================================================
+
+// Find minimum value in i64 array (returns 0 for empty array)
+std min_i64([dyn]i64 arr): i64 {
+    c n = len(arr)
+    if (eqi64(n, 0)) {
+        return 0
+    }
+
+    m result = arr[0]
+    m i: i64 = 1
+    subscope find_min {
+        if (gei64(i, n)) {
+            return
+        }
+        if (lti64(arr[i], result)) {
+            result = arr[i]
+        }
+        i = addi64(i, 1)
+        goto find_min
+    }
+    return result
+}
+
+// Find maximum value in i64 array (returns 0 for empty array)
+std max_i64([dyn]i64 arr): i64 {
+    c n = len(arr)
+    if (eqi64(n, 0)) {
+        return 0
+    }
+
+    m result = arr[0]
+    m i: i64 = 1
+    subscope find_max {
+        if (gei64(i, n)) {
+            return
+        }
+        if (gti64(arr[i], result)) {
+            result = arr[i]
+        }
+        i = addi64(i, 1)
+        goto find_max
+    }
+    return result
+}
+
+// Sum all values in i64 array
+std sum_i64([dyn]i64 arr): i64 {
+    c n = len(arr)
+    m result: i64 = 0
+    m i: i64 = 0
+    subscope sum_loop {
+        if (gei64(i, n)) {
+            return
+        }
+        result = addi64(result, arr[i])
+        i = addi64(i, 1)
+        goto sum_loop
+    }
+    return result
+}
+
+// ============================================================================
+// Array Reversal
+// ============================================================================
+
+// Reverse an i64 array (returns new array)
+std reverse_i64([dyn]i64 arr): [dyn]i64 {
+    c n = len(arr)
+    m result = []
+
+    m i = subi64(n, 1)
+    subscope rev_loop {
+        if (lti64(i, 0)) {
+            return
+        }
+        result = push(result, arr[i])
+        i = subi64(i, 1)
+        goto rev_loop
+    }
+
+    return result
+}

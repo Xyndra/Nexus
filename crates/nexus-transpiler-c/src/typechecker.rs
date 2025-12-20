@@ -109,6 +109,46 @@ impl<'a> TypeChecker<'a> {
                 },
             );
         }
+
+        // Register compat.fs builtins
+        for builtin in self.builtins.iter_compat_fs() {
+            let params: Vec<NexusType> = builtin
+                .params
+                .iter()
+                .map(|p| Self::parse_type_string(p.ty))
+                .collect();
+
+            let return_type = Self::parse_type_string(builtin.return_type);
+
+            self.functions.insert(
+                builtin.name.clone(),
+                FunctionSignature {
+                    params,
+                    return_type,
+                    color: builtin.color,
+                },
+            );
+        }
+
+        // Register compat.proc builtins
+        for builtin in self.builtins.iter_compat_proc() {
+            let params: Vec<NexusType> = builtin
+                .params
+                .iter()
+                .map(|p| Self::parse_type_string(p.ty))
+                .collect();
+
+            let return_type = Self::parse_type_string(builtin.return_type);
+
+            self.functions.insert(
+                builtin.name.clone(),
+                FunctionSignature {
+                    params,
+                    return_type,
+                    color: builtin.color,
+                },
+            );
+        }
     }
 
     /// Parse a type string like "i64", "[]rune", "void" into NexusType
@@ -146,17 +186,49 @@ impl<'a> TypeChecker<'a> {
                 prealloc: None,
             }),
             _ => {
-                // Handle array types like "[dyn]T" or "[N]T"
-                if type_str.starts_with('[')
-                    && let Some(end) = type_str.find(']')
-                {
-                    let elem_type_str = &type_str[end + 1..];
-                    let elem_type = Self::parse_type_string(elem_type_str);
-                    return NexusType::Array(ArrayType {
-                        element_type: Box::new(elem_type),
-                        size: ArraySize::Dynamic,
-                        prealloc: None,
-                    });
+                // Handle array types like "[dyn]T", "[N]T", or "[T]" (shorthand for []T)
+                if type_str.starts_with('[') {
+                    // Find the matching closing bracket (handling nested brackets)
+                    let mut depth = 0;
+                    let mut end = None;
+                    for (i, c) in type_str.char_indices() {
+                        match c {
+                            '[' => depth += 1,
+                            ']' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end = Some(i);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(end) = end {
+                        let inside_brackets = &type_str[1..end];
+                        let after_brackets = &type_str[end + 1..];
+
+                        // Check if this is [T] format (element type inside brackets, nothing after)
+                        // vs [dyn]T or [N]T format (size inside brackets, element type after)
+                        if after_brackets.is_empty() && !inside_brackets.is_empty() {
+                            // This is [T] format - element type is inside brackets
+                            let elem_type = Self::parse_type_string(inside_brackets);
+                            return NexusType::Array(ArrayType {
+                                element_type: Box::new(elem_type),
+                                size: ArraySize::Dynamic,
+                                prealloc: None,
+                            });
+                        } else {
+                            // This is [dyn]T or [N]T format - element type is after brackets
+                            let elem_type = Self::parse_type_string(after_brackets);
+                            return NexusType::Array(ArrayType {
+                                element_type: Box::new(elem_type),
+                                size: ArraySize::Dynamic,
+                                prealloc: None,
+                            });
+                        }
+                    }
                 }
                 // Unknown type, treat as named type
                 NexusType::Named(type_str.to_string())
@@ -789,7 +861,10 @@ impl<'a> TypeChecker<'a> {
     fn check_field_access(&mut self, access: &FieldAccessExpr) -> NexusResult<NexusType> {
         let object_type = self.check_expression(&access.object)?;
 
-        match &object_type.ty {
+        // Resolve the type in case it's a Named type
+        let resolved_type = self.type_registry.resolve_type(&object_type.ty);
+
+        match &resolved_type {
             NexusType::Struct(struct_def) => {
                 let field = struct_def.get_field(&access.field);
                 field
@@ -828,13 +903,27 @@ impl<'a> TypeChecker<'a> {
             });
         }
 
+        // Resolve the array type in case it contains Named element types
+        let resolved_array_type = self.type_registry.resolve_type(&array_type.ty);
+
         // Get element type from array
-        match &array_type.ty {
+        match &resolved_array_type {
             NexusType::Array(arr) => Ok((*arr.element_type).clone()),
-            _ => Err(NexusError::TypeError {
-                message: format!("Cannot index non-array type '{}'", array_type.ty),
-                span: index.span,
-            }),
+            _ => {
+                // Provide more context for debugging
+                let array_expr_info = match &*index.array {
+                    Expression::Variable(var) => format!(" (variable '{}')", var.name),
+                    Expression::FieldAccess(fa) => format!(" (field access '.{}')", fa.field),
+                    _ => String::new(),
+                };
+                Err(NexusError::TypeError {
+                    message: format!(
+                        "Cannot index non-array type '{}'{}",
+                        array_type.ty, array_expr_info
+                    ),
+                    span: index.span,
+                })
+            }
         }
     }
 

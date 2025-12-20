@@ -148,7 +148,11 @@ pub fn format_type_expr(ty: &nexus_parser::TypeExpr) -> String {
 
 /// Format a function parameter for display, including name and type.
 pub fn format_parameter(param: &nexus_parser::Parameter) -> String {
-    format!("{}: {}", param.name, format_type_expr(&param.ty))
+    if param.mutable {
+        format!("m {}: {}", param.name, format_type_expr(&param.ty))
+    } else {
+        format!("{}: {}", param.name, format_type_expr(&param.ty))
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,9 @@
 //! A valid sample must have:
 //! - `nexus.json5` - project configuration
 //! - `main.nx` - main source file
-//! - `expected.out` - expected output
+//! - `expected.out` - expected output (for simple tests)
+//!   OR
+//! - `resources/` - directory with test cases (name.txt = input, name.out = expected output)
 //!
 //! Test functions (fn test_*) are run via `nexus test <path>`.
 //!
@@ -38,14 +40,24 @@ fn normalize_output(s: &str) -> String {
     s.replace("\r\n", "\n").trim_end().to_string()
 }
 
-/// Run a sample program and return its output
-fn run_sample(sample_dir: &PathBuf) -> Result<String, String> {
-    let output = Command::new("cargo")
-        .current_dir(workspace_root())
+/// Run a sample program with optional input file path (passed as argument, not stdin)
+fn run_sample_with_input(
+    sample_dir: &PathBuf,
+    input_path: Option<&PathBuf>,
+) -> Result<String, String> {
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(workspace_root())
         .args(["run", "-q", "-p", "nexus-cli", "--", "run"])
-        .arg(sample_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .arg(sample_dir);
+
+    // Pass input file path as argument to main() instead of piping to stdin
+    if let Some(input) = input_path {
+        cmd.arg("--").arg(input);
+    }
+
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let output = cmd
         .output()
         .map_err(|e| format!("Failed to run cargo: {}", e))?;
 
@@ -85,11 +97,53 @@ fn run_nexus_test(sample_dir: &PathBuf) -> Result<String, String> {
     }
 }
 
+/// A test case within a sample
+#[derive(Debug, Clone)]
+struct TestCase {
+    name: String,
+    input_path: Option<PathBuf>,
+    expected_path: PathBuf,
+}
+
 /// Discovered sample with all required paths
 struct Sample {
     name: String,
     dir: PathBuf,
-    expected_path: PathBuf,
+    test_cases: Vec<TestCase>,
+}
+
+/// Discover test cases in a resources directory
+fn discover_test_cases(resources_path: &Path) -> Vec<TestCase> {
+    let mut test_cases = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(resources_path) {
+        // Collect all .txt files (inputs)
+        let mut input_files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |ext| ext == "txt"))
+            .collect();
+
+        input_files.sort();
+
+        for input_path in input_files {
+            let stem = input_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let expected_path = resources_path.join(format!("{}.out", stem));
+
+            if expected_path.exists() {
+                test_cases.push(TestCase {
+                    name: stem.to_string(),
+                    input_path: Some(input_path),
+                    expected_path,
+                });
+            }
+        }
+    }
+
+    test_cases
 }
 
 /// Discover all valid sample directories
@@ -113,13 +167,31 @@ fn discover_samples() -> Vec<Sample> {
 
                 let config_path = path.join("nexus.json5");
                 let expected_path = path.join("expected.out");
+                let resources_path = path.join("resources");
+
+                // Check for resources directory with test cases
+                if config_path.exists() && resources_path.exists() && resources_path.is_dir() {
+                    let test_cases = discover_test_cases(&resources_path);
+                    if !test_cases.is_empty() {
+                        samples.push(Sample {
+                            name,
+                            dir: path,
+                            test_cases,
+                        });
+                        continue;
+                    }
+                }
 
                 // Only include samples with config and expected output
                 if config_path.exists() && expected_path.exists() {
                     samples.push(Sample {
                         name,
                         dir: path,
-                        expected_path,
+                        test_cases: vec![TestCase {
+                            name: "main".to_string(),
+                            input_path: None,
+                            expected_path,
+                        }],
                     });
                 }
             }
@@ -130,21 +202,26 @@ fn discover_samples() -> Vec<Sample> {
     samples
 }
 
-/// Run a single sample: compare output and run test functions
-fn run_single_sample(sample: &Sample) -> Result<(), String> {
-    // Run the main program and compare output
-    let expected = fs::read_to_string(&sample.expected_path)
-        .map_err(|e| format!("{}: Failed to read expected output: {}", sample.name, e))?;
+/// Run a single test case for a sample
+fn run_single_test_case(sample: &Sample, test_case: &TestCase) -> Result<(), String> {
+    let expected = fs::read_to_string(&test_case.expected_path).map_err(|e| {
+        format!(
+            "{}::{}: Failed to read expected output: {}",
+            sample.name, test_case.name, e
+        )
+    })?;
 
-    let actual = run_sample(&sample.dir).map_err(|e| format!("{}: {}", sample.name, e))?;
+    let actual = run_sample_with_input(&sample.dir, test_case.input_path.as_ref())
+        .map_err(|e| format!("{}::{}: {}", sample.name, test_case.name, e))?;
 
     let actual_normalized = normalize_output(&actual);
     let expected_normalized = normalize_output(&expected);
 
     if actual_normalized != expected_normalized {
         return Err(format!(
-            "{}: Output mismatch\n  Expected:\n{}\n  Actual:\n{}",
+            "{}::{}: Output mismatch\n  Expected:\n{}\n  Actual:\n{}",
             sample.name,
+            test_case.name,
             expected_normalized
                 .lines()
                 .map(|l| format!("    {}", l))
@@ -158,39 +235,59 @@ fn run_single_sample(sample: &Sample) -> Result<(), String> {
         ));
     }
 
-    // Test C transpiler
-    test_c_transpiler(sample, &actual_normalized)?;
+    // Test C transpiler for all test cases
+    test_c_transpiler(sample, test_case, &actual_normalized)?;
 
-    // Run nexus test to execute any test_* functions
-    match run_nexus_test(&sample.dir) {
-        Ok(output) => {
-            // Check if any tests failed (look for failure indicators)
-            if output.contains("failed") && output.contains("✗") {
-                return Err(format!(
-                    "{}: test functions failed:\n{}",
-                    sample.name, output
-                ));
+    Ok(())
+}
+
+/// Run a single sample: compare output and run test functions
+fn run_single_sample(sample: &Sample) -> Result<(), String> {
+    // Run all test cases
+    for test_case in &sample.test_cases {
+        run_single_test_case(sample, test_case)?;
+    }
+
+    // Run nexus test to execute any test_* functions (only for simple samples)
+    if sample.test_cases.len() == 1 && sample.test_cases[0].input_path.is_none() {
+        match run_nexus_test(&sample.dir) {
+            Ok(output) => {
+                // Check if any tests failed (look for failure indicators)
+                if output.contains("failed") && output.contains("✗") {
+                    return Err(format!(
+                        "{}: test functions failed:\n{}",
+                        sample.name, output
+                    ));
+                }
             }
-            Ok(())
-        }
-        Err(e) => {
-            // If "No test functions found", that's fine
-            if e.contains("No test functions found") {
-                Ok(())
-            } else {
-                Err(format!("{}: {}", sample.name, e))
+            Err(e) => {
+                // If "No test functions found", that's fine
+                if !e.contains("No test functions found") {
+                    return Err(format!("{}: {}", sample.name, e));
+                }
             }
         }
     }
+
+    Ok(())
 }
 
 /// Test C transpiler for a sample
-fn test_c_transpiler(sample: &Sample, interpreter_output: &str) -> Result<(), String> {
+fn test_c_transpiler(
+    sample: &Sample,
+    test_case: &TestCase,
+    interpreter_output: &str,
+) -> Result<(), String> {
+    let input_path = test_case.input_path.as_ref();
     // Create temp directory
     let temp_dir = sample.dir.join("c_transpile");
     let _ = fs::remove_dir_all(&temp_dir);
-    fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("{}: Failed to create C temp dir: {}", sample.name, e))?;
+    fs::create_dir_all(&temp_dir).map_err(|e| {
+        format!(
+            "{}::{}: Failed to create C temp dir: {}",
+            sample.name, test_case.name, e
+        )
+    })?;
 
     // Transpile
     let config = TranspilerConfig {
@@ -198,32 +295,55 @@ fn test_c_transpiler(sample: &Sample, interpreter_output: &str) -> Result<(), St
         ..Default::default()
     };
     let mut transpiler = CTranspiler::with_config(config);
-    let result = transpiler
-        .transpile_project(&sample.dir)
-        .map_err(|e| format!("{}: C transpilation failed: {}", sample.name, e))?;
+    let result = transpiler.transpile_project(&sample.dir).map_err(|e| {
+        format!(
+            "{}::{}: C transpilation failed: {}",
+            sample.name, test_case.name, e
+        )
+    })?;
 
     // Write files
     for (path, content) in &result.files {
-        fs::write(path, content)
-            .map_err(|e| format!("{}: Failed to write C file: {}", sample.name, e))?;
+        fs::write(path, content).map_err(|e| {
+            format!(
+                "{}::{}: Failed to write C file: {}",
+                sample.name, test_case.name, e
+            )
+        })?;
     }
     fs::write(
         temp_dir.join("nexus_core.h"),
         nexus_transpiler_c::RUNTIME_HEADER,
     )
-    .map_err(|e| format!("{}: Failed to write runtime header: {}", sample.name, e))?;
-    fs::write(temp_dir.join("nexus_core.c"), &result.runtime)
-        .map_err(|e| format!("{}: Failed to write runtime: {}", sample.name, e))?;
+    .map_err(|e| {
+        format!(
+            "{}::{}: Failed to write runtime header: {}",
+            sample.name, test_case.name, e
+        )
+    })?;
+    fs::write(temp_dir.join("nexus_core.c"), &result.runtime).map_err(|e| {
+        format!(
+            "{}::{}: Failed to write runtime: {}",
+            sample.name, test_case.name, e
+        )
+    })?;
 
     // Try to compile and run
-    if let Some(c_output) = try_compile_and_run(&temp_dir, &result, &sample.name)? {
+    if let Some(c_output) = try_compile_and_run(
+        &temp_dir,
+        &result,
+        &sample.name,
+        &test_case.name,
+        input_path,
+    )? {
         let c_normalized = normalize_output(&c_output);
         let interpreter_normalized = normalize_output(interpreter_output);
 
         if c_normalized != interpreter_normalized {
             return Err(format!(
-                "{}: C output differs from interpreter\n  Interpreter:\n{}\n  C:\n{}",
+                "{}::{}: C output differs from interpreter\n  Interpreter:\n{}\n  C:\n{}",
                 sample.name,
+                test_case.name,
                 interpreter_normalized
                     .lines()
                     .map(|l| format!("    {}", l))
@@ -246,6 +366,8 @@ fn try_compile_and_run(
     temp_dir: &Path,
     result: &nexus_transpiler_c::TranspileResult,
     sample_name: &str,
+    test_case_name: &str,
+    input_path: Option<&PathBuf>,
 ) -> Result<Option<String>, String> {
     let mut c_files: Vec<PathBuf> = result.files.keys().cloned().collect();
     c_files.push(temp_dir.join("nexus_core.c"));
@@ -286,27 +408,41 @@ fn try_compile_and_run(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .map_err(|e| format!("{}: Failed to run {}: {}", sample_name, compiler, e))?;
+            .map_err(|e| {
+                format!(
+                    "{}::{}: Failed to run {}: {}",
+                    sample_name, test_case_name, compiler, e
+                )
+            })?;
 
         if !compile_output.status.success() {
             let stderr = String::from_utf8_lossy(&compile_output.stderr);
             return Err(format!(
-                "{}: C compilation failed with {}:\n{}",
-                sample_name, compiler, stderr
+                "{}::{}: C compilation failed with {}:\n{}",
+                sample_name, test_case_name, compiler, stderr
             ));
         }
 
-        let run_output = Command::new(&exe_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("{}: Failed to run compiled program: {}", sample_name, e))?;
+        let mut run_cmd = Command::new(&exe_path);
+        run_cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        // Pass input file path as argument if provided
+        if let Some(input) = input_path {
+            run_cmd.arg(input);
+        }
+
+        let run_output = run_cmd.output().map_err(|e| {
+            format!(
+                "{}::{}: Failed to run compiled program: {}",
+                sample_name, test_case_name, e
+            )
+        })?;
 
         if !run_output.status.success() {
             let stderr = String::from_utf8_lossy(&run_output.stderr);
             return Err(format!(
-                "{}: Compiled program failed:\n{}",
-                sample_name, stderr
+                "{}::{}: Compiled program failed:\n{}",
+                sample_name, test_case_name, stderr
             ));
         }
 
@@ -335,8 +471,13 @@ fn test_all_samples() {
     for sample in &samples {
         match run_single_sample(sample) {
             Ok(()) => {
-                passed += 1;
-                println!("✓ {}", sample.name);
+                let test_count = sample.test_cases.len();
+                passed += test_count;
+                if test_count == 1 {
+                    println!("✓ {}", sample.name);
+                } else {
+                    println!("✓ {} ({} test cases)", sample.name, test_count);
+                }
             }
             Err(e) => {
                 failed += 1;

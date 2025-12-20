@@ -5,7 +5,9 @@
 use nexus_core::NexusError;
 use nexus_interpreter::{Interpreter, InterpreterConfig, Value};
 use nexus_parser::parse;
-use nexus_permissions::{CompatPermission, Permission, PermissionSet, PlatPermission};
+use nexus_permissions::{
+    CompatPermission, DesktopX64Permission, Permission, PermissionSet, PlatPermission,
+};
 use nexus_project::{ProjectConfig, ResolvedProject, load_and_resolve_project_with_stdlib};
 use nexus_sandbox::Sandbox;
 use nexus_transpiler_c::transpile_project;
@@ -44,6 +46,10 @@ struct CliConfig {
     transpile_target: Option<String>,
     /// Output directory (for transpile subcommand)
     output_dir: Option<PathBuf>,
+    /// Project name (for init subcommand)
+    project_name: Option<String>,
+    /// Arguments to pass to main()
+    program_args: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +57,7 @@ enum Subcommand {
     Run,
     Test,
     Transpile,
+    Init,
 }
 
 fn parse_args() -> CliConfig {
@@ -78,12 +85,30 @@ fn parse_args() -> CliConfig {
                     i += 1;
                 }
             }
+            "init" => {
+                config.subcommand = Some(Subcommand::Init);
+                i += 1;
+                // Next argument should be the project name
+                if i < args.len() && !args[i].starts_with('-') {
+                    config.project_name = Some(args[i].clone());
+                    i += 1;
+                }
+            }
             _ => {}
         }
     }
 
     while i < args.len() {
         match args[i].as_str() {
+            "--" => {
+                // Everything after -- is passed to the program
+                i += 1;
+                while i < args.len() {
+                    config.program_args.push(args[i].clone());
+                    i += 1;
+                }
+                break;
+            }
             "-h" | "--help" => config.help = true,
             "-v" | "--version" => config.version = true,
             "-e" | "--eval" => {
@@ -140,11 +165,14 @@ USAGE:
     nexus [OPTIONS]
     nexus run <FILE_OR_DIR>
     nexus test <FILE_OR_DIR>
+    nexus init [PROJECT_NAME]
     nexus transpile <TARGET> <PROJECT_DIR> [OPTIONS]
 
 SUBCOMMANDS:
     run <path>              Run a file or directory (for dirs, looks for main.nx)
     test <path>             Run tests for a file or directory
+    init [name]             Initialize a new Nexus project in the current directory
+                            If name is provided, creates a new directory with that name
     transpile <target> <path>
                             Transpile Nexus code to another language
                             Targets: c
@@ -166,6 +194,7 @@ EXAMPLES:
     nexus run hello             Run hello.nx (adds .nx extension)
     nexus run samples/hello     Run samples/hello/main.nx
     nexus test samples/arrays   Run tests for samples/arrays
+    nexus init myproject        Create a new project called 'myproject'
     nexus -e "println(42)"      Execute code directly
     nexus run --ast hello.nx    Print the AST of a file
     nexus                       Start the REPL
@@ -276,8 +305,16 @@ fn build_module_permissions(project_config: &ProjectConfig, module_name: &str) -
     if project_config.has_compat_net_permission(module_name) {
         perms.allow(Permission::Compat(CompatPermission::Net));
     }
-    if project_config.has_plat_permission(module_name) {
-        perms.allow(Permission::Plat(PlatPermission::All));
+    if project_config.has_compat_proc_permission(module_name) {
+        perms.allow(Permission::Compat(CompatPermission::Process));
+    }
+    if project_config.has_plat_console_permission(module_name) {
+        perms.allow(Permission::Compat(CompatPermission::Console));
+    }
+    if project_config.has_plat_desktop_permission(module_name) {
+        perms.allow(Permission::Plat(PlatPermission::DesktopX64(
+            DesktopX64Permission::All,
+        )));
     }
 
     perms
@@ -339,6 +376,14 @@ fn run_resolved_project(
 
     // Set current module to the main project module before running
     interpreter.set_current_module(&resolved.config.module_name);
+
+    // Set program arguments for compat.proc.getargs()
+    let args: Vec<Value> = cli_config
+        .program_args
+        .iter()
+        .map(|s| Value::String(s.chars().collect()))
+        .collect();
+    interpreter.set_args(args);
 
     // Run the main function
     interpreter.run()?;
@@ -869,6 +914,77 @@ fn transpile_path(path: &Path, target: &str, config: &CliConfig) -> Result<(), N
     Ok(())
 }
 
+/// Initialize a new Nexus project
+fn init_project(name: Option<&str>) -> Result<(), NexusError> {
+    let project_dir = if let Some(name) = name {
+        let dir = PathBuf::from(name);
+        if dir.exists() {
+            return Err(NexusError::IoError {
+                message: format!("Directory '{}' already exists", name),
+            });
+        }
+        fs::create_dir_all(&dir).map_err(|e| NexusError::IoError {
+            message: format!("Failed to create directory '{}': {}", name, e),
+        })?;
+        dir
+    } else {
+        PathBuf::from(".")
+    };
+
+    let project_name = name.unwrap_or_else(|| {
+        std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "myproject".to_string())
+            .leak()
+    });
+
+    let config_path = project_dir.join("nexus.json5");
+    if config_path.exists() {
+        return Err(NexusError::IoError {
+            message: "nexus.json5 already exists in this directory".to_string(),
+        });
+    }
+
+    let config_content = format!(
+        r#"{{
+    mod: '{}',
+    permissions: {{
+        "compat.io": ['{}']
+    }},
+    deps: []
+}}
+"#,
+        project_name, project_name
+    );
+
+    fs::write(&config_path, config_content).map_err(|e| NexusError::IoError {
+        message: format!("Failed to write nexus.json5: {}", e),
+    })?;
+
+    let main_path = project_dir.join("main.nx");
+    if !main_path.exists() {
+        let main_content = r#"use { println } from compat.io
+
+compat main(): void {
+    println("Hello, Nexus!")
+}
+"#;
+        fs::write(&main_path, main_content).map_err(|e| NexusError::IoError {
+            message: format!("Failed to write main.nx: {}", e),
+        })?;
+    }
+
+    println!("Initialized Nexus project '{}'", project_name);
+    if name.is_some() {
+        println!("  cd {} && nexus run .", project_name);
+    } else {
+        println!("  nexus run .");
+    }
+
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let config = parse_args();
 
@@ -899,6 +1015,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        Some(Subcommand::Init) => init_project(config.project_name.as_deref()),
         Some(Subcommand::Transpile) => {
             let target = match &config.transpile_target {
                 Some(t) => t.as_str(),

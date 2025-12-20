@@ -87,6 +87,9 @@ nx_array nx_array_with_capacity(size_t elem_size, size_t capacity);
 // Push an element to the array
 void nx_array_push(nx_array* arr, const void* elem);
 
+// Push an element with explicit size (reinitializes array elem_size on first push if needed)
+void nx_array_push_sized(nx_array* arr, const void* elem, size_t elem_size);
+
 // Pop an element from the array
 bool nx_array_pop(nx_array* arr, void* out_elem);
 
@@ -176,6 +179,67 @@ void nx_compat_println(nx_value* values, size_t count);
 
 // Read a line from stdin
 nx_string nx_compat_readln(void);
+
+// Parse a string to i64
+int64_t nx_compat_parse_i64(nx_string* s);
+
+// Split a string by delimiter
+nx_array nx_compat_split(nx_string* s, nx_string* delimiter);
+
+// Trim whitespace from string
+nx_string nx_compat_trim(nx_string* s);
+
+// Check if string starts with prefix
+bool nx_compat_starts_with(nx_string* s, nx_string* prefix);
+
+// Check if string ends with suffix
+bool nx_compat_ends_with(nx_string* s, nx_string* suffix);
+
+// Check if string is empty
+bool nx_compat_is_empty(nx_string* s);
+
+// Check if array is empty
+bool nx_compat_is_empty_array(nx_array* arr);
+
+// Join array of strings with delimiter
+nx_string nx_compat_join(nx_array* arr, nx_string* delimiter);
+
+// Compare two strings for equality
+bool nx_compat_eqs(nx_string* a, nx_string* b);
+
+// ============================================================================
+// Std Builtin Functions (always available, no import needed)
+// ============================================================================
+
+// Parse a string to i64
+int64_t nx_builtin_parse_i64(nx_string s);
+
+// Split a string by delimiter
+nx_array nx_builtin_split(nx_string s, nx_string delimiter);
+
+// Trim whitespace from string
+nx_string nx_builtin_trim(nx_string s);
+
+// Check if string starts with prefix
+bool nx_builtin_starts_with(nx_string s, nx_string prefix);
+
+// Check if string ends with suffix
+bool nx_builtin_ends_with(nx_string s, nx_string suffix);
+
+// Check if string is empty
+bool nx_builtin_is_empty(nx_string s);
+
+// Join array of strings with delimiter
+nx_string nx_builtin_join(nx_array arr, nx_string delimiter);
+
+// Compare two strings for equality
+bool nx_builtin_eqs(nx_string a, nx_string b);
+
+// Get command line arguments (std builtin version)
+nx_array nx_getargs(void);
+
+// Read file contents (takes nx_string path)
+nx_string nx_read_file(nx_string path);
 
 // Read entire file contents
 nx_string nx_compat_read_file(const char* path);

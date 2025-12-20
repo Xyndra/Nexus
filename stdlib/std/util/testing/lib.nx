@@ -35,10 +35,10 @@ $all([dyn]rune checks): macro {
             return
         }
 
-        c ch = checks[@unchecked i]
+        c char = checks[@unchecked i]
 
         // Check for semicolon separator
-        if (eqr(ch, ";"[0])) {
+        if (eqr(char, ";"[0])) {
             // Flush current expression
             if (gti64(len(current_expr), 0)) {
                 if (first) {
@@ -55,7 +55,7 @@ $all([dyn]rune checks): macro {
         }
 
         // Skip leading/trailing whitespace in expressions
-        if (eqr(ch, " "[0])) {
+        if (eqr(char, " "[0])) {
             if (eqi64(len(current_expr), 0)) {
                 // Skip leading whitespace
                 i = addi64(i, 1)
@@ -64,7 +64,7 @@ $all([dyn]rune checks): macro {
         }
 
         // Accumulate expression character
-        current_expr = push(current_expr, ch)
+        current_expr = push(current_expr, char)
         i = addi64(i, 1)
         goto parse
     }
@@ -77,8 +77,8 @@ $all([dyn]rune checks): macro {
         if (gei64(j, result_len)) {
             return
         }
-        c ch = result[@unchecked j]
-        trimmed = push(trimmed, ch)
+        c char = result[@unchecked j]
+        trimmed = push(trimmed, char)
         j = addi64(j, 1)
         goto trim
     }

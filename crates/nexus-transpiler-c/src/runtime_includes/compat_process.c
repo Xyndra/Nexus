@@ -27,9 +27,11 @@ void nx_init_args(int argc, char** argv) {
 }
 
 nx_array nx_compat_args(void) {
-    nx_array arr = nx_array_with_capacity(sizeof(nx_string), g_argc);
+    // Skip argv[0] (program name) and only return actual arguments
+    int num_args = g_argc > 0 ? g_argc - 1 : 0;
+    nx_array arr = nx_array_with_capacity(sizeof(nx_string), num_args);
 
-    for (int i = 0; i < g_argc; i++) {
+    for (int i = 1; i < g_argc; i++) {
         nx_string arg = nx_string_from_cstr(g_argv[i]);
         nx_array_push(&arr, &arg);
     }

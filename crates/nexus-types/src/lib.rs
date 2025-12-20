@@ -141,6 +141,35 @@ impl NexusType {
             // Primitives must match exactly
             (NexusType::Primitive(a), NexusType::Primitive(b)) => a == b,
 
+            // Array to array assignment
+            (NexusType::Array(src_arr), NexusType::Array(tgt_arr)) => {
+                // Empty array (size 0) is assignable to any array type
+                if matches!(src_arr.size, ArraySize::Fixed(0)) {
+                    return true;
+                }
+
+                // If either element type is Error (represents "any"), it's compatible
+                if matches!(*src_arr.element_type, NexusType::Error)
+                    || matches!(*tgt_arr.element_type, NexusType::Error)
+                {
+                    return true;
+                }
+
+                // Element types must be assignable
+                if !src_arr.element_type.is_assignable_to(&tgt_arr.element_type) {
+                    return false;
+                }
+
+                // Fixed size array can be assigned to dynamic array
+                // Same-size arrays are compatible (covered by equality check above)
+                match (&src_arr.size, &tgt_arr.size) {
+                    (ArraySize::Fixed(_), ArraySize::Dynamic) => true,
+                    (ArraySize::Dynamic, ArraySize::Dynamic) => true,
+                    (ArraySize::Fixed(a), ArraySize::Fixed(b)) => a == b,
+                    _ => false,
+                }
+            }
+
             // Struct can be assigned to interface if it implements it
             (NexusType::Struct(s), NexusType::Interface(i)) => s.implements_interface(i),
 

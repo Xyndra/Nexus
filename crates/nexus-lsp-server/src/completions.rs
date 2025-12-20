@@ -66,8 +66,6 @@ fn add_keywords(items: &mut Vec<CompletionItem>) {
         "macro",
         "use",
         "from",
-        "string",
-        "bytes",
     ];
 
     for kw in keywords {

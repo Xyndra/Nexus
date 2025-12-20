@@ -1,3 +1,7 @@
 [submodule "tree-sitter-nexus"]
 	path = tree-sitter-nexus
 	url = https://github.com/Xyndra/tree-sitter-nexus
+
+[submodule "samples/bwinf_44_1_1"]
+	path = samples/bwinf_44_1_1
+	url = https://github.com/Xyndra/bwinf_44_1_1_nx

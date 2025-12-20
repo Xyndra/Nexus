@@ -11,14 +11,18 @@
 //! - `f32_ops` - 32-bit float operations
 //! - `rune_ops` - Rune comparison operations
 //! - `conversions` - Type conversion functions
-//! - `collections` - Array/string/bytes operations
+//! - `collections` - Array/rune array/bytes operations
 //! - `utility` - Utility functions (typeof, assert, etc.)
-//! - `io` - IO functions (print, println)
+//! - `compat_io` - Compatibility IO functions (print, println)
+//! - `plat_console` - Platform console functions (readln)
 //! - `bitwise` - Bitwise operations
+//! - `strings` - Rune array manipulation functions
 
 mod bitwise;
 mod collections;
+mod compat_fs;
 mod compat_io;
+mod compat_proc;
 mod conversions;
 mod f32_ops;
 mod f64_ops;
@@ -26,7 +30,9 @@ mod i32_ops;
 mod i64_ops;
 mod logical;
 pub(crate) mod macros;
+mod plat_console;
 mod rune_ops;
+mod strings;
 mod utility;
 
 use crate::Value;
@@ -97,6 +103,12 @@ pub struct BuiltinRegistry {
     builtins: HashMap<String, Builtin>,
     /// Builtins from compat.io module that require import
     compat_io_builtins: HashMap<String, Builtin>,
+    /// Builtins from compat.fs module that require import
+    compat_fs_builtins: HashMap<String, Builtin>,
+    /// Builtins from compat.proc module that require import
+    compat_proc_builtins: HashMap<String, Builtin>,
+    /// Builtins from plat.console module that require import
+    plat_console_builtins: HashMap<String, Builtin>,
 }
 
 /// Macro to register a builtin function with less boilerplate
@@ -117,12 +129,42 @@ macro_rules! register_compat_io_builtins {
     };
 }
 
+/// Macro to register compat.fs builtins
+macro_rules! register_compat_fs_builtins {
+    ($registry:expr, $( ($name:expr, $params:expr, $ret:expr, $func:expr) ),* $(,)?) => {
+        $(
+            $registry.register_compat_fs($name, $params, $ret, $func);
+        )*
+    };
+}
+
+/// Macro to register compat.proc builtins
+macro_rules! register_compat_proc_builtins {
+    ($registry:expr, $( ($name:expr, $params:expr, $ret:expr, $func:expr) ),* $(,)?) => {
+        $(
+            $registry.register_compat_proc($name, $params, $ret, $func);
+        )*
+    };
+}
+
+/// Macro to register plat.console builtins
+macro_rules! register_plat_console_builtins {
+    ($registry:expr, $( ($name:expr, $params:expr, $ret:expr, $func:expr) ),* $(,)?) => {
+        $(
+            $registry.register_plat_console($name, $params, $ret, $func);
+        )*
+    };
+}
+
 impl BuiltinRegistry {
     /// Create a new registry with all builtin functions
     pub fn new() -> Self {
         let mut registry = Self {
             builtins: HashMap::new(),
             compat_io_builtins: HashMap::new(),
+            compat_fs_builtins: HashMap::new(),
+            compat_proc_builtins: HashMap::new(),
+            plat_console_builtins: HashMap::new(),
         };
         registry.register_all();
         registry
@@ -138,9 +180,39 @@ impl BuiltinRegistry {
         self.compat_io_builtins.get(name)
     }
 
+    /// Get a compat.fs builtin by name (requires import)
+    pub fn get_compat_fs(&self, name: &str) -> Option<&Builtin> {
+        self.compat_fs_builtins.get(name)
+    }
+
+    /// Get a compat.proc builtin by name (requires import)
+    pub fn get_compat_proc(&self, name: &str) -> Option<&Builtin> {
+        self.compat_proc_builtins.get(name)
+    }
+
+    /// Get a plat.console builtin by name (requires import)
+    pub fn get_plat_console(&self, name: &str) -> Option<&Builtin> {
+        self.plat_console_builtins.get(name)
+    }
+
     /// Check if a symbol is a compat.io builtin (requires import)
     pub fn is_compat_io(&self, name: &str) -> bool {
         self.compat_io_builtins.contains_key(name)
+    }
+
+    /// Check if a symbol is a compat.fs builtin (requires import)
+    pub fn is_compat_fs(&self, name: &str) -> bool {
+        self.compat_fs_builtins.contains_key(name)
+    }
+
+    /// Check if a symbol is a compat.proc builtin (requires import)
+    pub fn is_compat_proc(&self, name: &str) -> bool {
+        self.compat_proc_builtins.contains_key(name)
+    }
+
+    /// Check if a symbol is a plat.console builtin (requires import)
+    pub fn is_plat_console(&self, name: &str) -> bool {
+        self.plat_console_builtins.contains_key(name)
     }
 
     /// Get all builtin names (core builtins only)
@@ -153,6 +225,21 @@ impl BuiltinRegistry {
         self.compat_io_builtins.keys().map(|s| s.as_str())
     }
 
+    /// Get all compat.fs builtin names
+    pub fn compat_fs_names(&self) -> impl Iterator<Item = &str> {
+        self.compat_fs_builtins.keys().map(|s| s.as_str())
+    }
+
+    /// Get all compat.proc builtin names
+    pub fn compat_proc_names(&self) -> impl Iterator<Item = &str> {
+        self.compat_proc_builtins.keys().map(|s| s.as_str())
+    }
+
+    /// Get all plat.console builtin names
+    pub fn plat_console_names(&self) -> impl Iterator<Item = &str> {
+        self.plat_console_builtins.keys().map(|s| s.as_str())
+    }
+
     /// Iterate over all core builtins
     pub fn iter(&self) -> impl Iterator<Item = &Builtin> {
         self.builtins.values()
@@ -161,6 +248,21 @@ impl BuiltinRegistry {
     /// Iterate over all compat.io builtins
     pub fn iter_compat_io(&self) -> impl Iterator<Item = &Builtin> {
         self.compat_io_builtins.values()
+    }
+
+    /// Iterate over all compat.fs builtins
+    pub fn iter_compat_fs(&self) -> impl Iterator<Item = &Builtin> {
+        self.compat_fs_builtins.values()
+    }
+
+    /// Iterate over all compat.proc builtins
+    pub fn iter_compat_proc(&self) -> impl Iterator<Item = &Builtin> {
+        self.compat_proc_builtins.values()
+    }
+
+    /// Iterate over all plat.console builtins
+    pub fn iter_plat_console(&self) -> impl Iterator<Item = &Builtin> {
+        self.plat_console_builtins.values()
     }
 
     /// Register a builtin function
@@ -220,6 +322,99 @@ impl BuiltinRegistry {
                 return_type,
                 required_import: Some("compat.io"),
                 color: FunctionColor::Compat,
+                func,
+            },
+        );
+    }
+
+    /// Register a compat.fs builtin function
+    fn register_compat_fs(
+        &mut self,
+        name: &str,
+        params: &[(&'static str, &'static str)],
+        return_type: &'static str,
+        func: fn(&[Value], Span) -> NexusResult<Value>,
+    ) {
+        let param_vec: Vec<BuiltinParam> = params
+            .iter()
+            .map(|(n, t)| BuiltinParam { name: n, ty: t })
+            .collect();
+        let arity = if params.iter().any(|(_, t)| t.starts_with("...")) {
+            None
+        } else {
+            Some(params.len())
+        };
+        self.compat_fs_builtins.insert(
+            name.to_string(),
+            Builtin {
+                name: name.to_string(),
+                arity,
+                params: param_vec,
+                return_type,
+                required_import: Some("compat.fs"),
+                color: FunctionColor::Compat,
+                func,
+            },
+        );
+    }
+
+    /// Register a compat.proc builtin function
+    fn register_compat_proc(
+        &mut self,
+        name: &str,
+        params: &[(&'static str, &'static str)],
+        return_type: &'static str,
+        func: fn(&[Value], Span) -> NexusResult<Value>,
+    ) {
+        let param_vec: Vec<BuiltinParam> = params
+            .iter()
+            .map(|(n, t)| BuiltinParam { name: n, ty: t })
+            .collect();
+        let arity = if params.iter().any(|(_, t)| t.starts_with("...")) {
+            None
+        } else {
+            Some(params.len())
+        };
+        self.compat_proc_builtins.insert(
+            name.to_string(),
+            Builtin {
+                name: name.to_string(),
+                arity,
+                params: param_vec,
+                return_type,
+                required_import: Some("compat.proc"),
+                color: FunctionColor::Compat,
+                func,
+            },
+        );
+    }
+
+    /// Register a plat.console builtin function
+    fn register_plat_console(
+        &mut self,
+        name: &str,
+        params: &[(&'static str, &'static str)],
+        return_type: &'static str,
+        func: fn(&[Value], Span) -> NexusResult<Value>,
+    ) {
+        let param_vec: Vec<BuiltinParam> = params
+            .iter()
+            .map(|(n, t)| BuiltinParam { name: n, ty: t })
+            .collect();
+        let arity = if params.iter().any(|(_, t)| t.starts_with("...")) {
+            None
+        } else {
+            Some(params.len())
+        };
+        self.plat_console_builtins.insert(
+            name.to_string(),
+            Builtin {
+                name: name.to_string(),
+                arity,
+                params: param_vec,
+                return_type,
+                required_import: Some("plat.console"),
+                color: FunctionColor::Plat,
                 func,
             },
         );
@@ -544,7 +739,7 @@ impl BuiltinRegistry {
             (
                 "push",
                 &[("array", "[]any"), ("value", "any")],
-                "void",
+                "[]any",
                 collections::push
             ),
             ("pop", &[("array", "[]any")], "any", collections::pop),
@@ -571,11 +766,11 @@ impl BuiltinRegistry {
         // Utility functions
         register_builtins!(
             self,
-            ("typeof", &[("value", "any")], "string", utility::type_of),
-            ("str", &[("value", "any")], "string", utility::str),
+            ("typeof", &[("value", "any")], "[dyn]rune", utility::type_of),
+            ("str", &[("value", "any")], "[dyn]rune", utility::str),
             ("is_none", &[("value", "any")], "bool", utility::is_none),
             ("unwrap", &[("value", "any")], "any", utility::unwrap),
-            ("panic", &[("message", "string")], "void", utility::panic),
+            ("panic", &[("message", "[dyn]rune")], "void", utility::panic),
             ("assert", &[("condition", "bool")], "void", utility::assert),
             (
                 "assert_eq",
@@ -606,6 +801,49 @@ impl BuiltinRegistry {
             ),
         );
 
+        // Rune array manipulation functions (std - always available)
+        register_builtins!(
+            self,
+            (
+                "parse_i64",
+                &[("s", "[dyn]rune")],
+                "i64",
+                strings::parse_i64
+            ),
+            (
+                "split",
+                &[("s", "[dyn]rune"), ("delimiter", "[dyn]rune")],
+                "[dyn][dyn]rune",
+                strings::split
+            ),
+            ("trim", &[("s", "[dyn]rune")], "[dyn]rune", strings::trim),
+            (
+                "starts_with",
+                &[("s", "[dyn]rune"), ("prefix", "[dyn]rune")],
+                "bool",
+                strings::starts_with
+            ),
+            (
+                "ends_with",
+                &[("s", "[dyn]rune"), ("suffix", "[dyn]rune")],
+                "bool",
+                strings::ends_with
+            ),
+            ("is_empty", &[("s", "[dyn]rune")], "bool", strings::is_empty),
+            (
+                "join",
+                &[("arr", "[dyn][dyn]rune"), ("delimiter", "[dyn]rune")],
+                "[dyn]rune",
+                strings::join
+            ),
+            (
+                "eqs",
+                &[("a", "[dyn]rune"), ("b", "[dyn]rune")],
+                "bool",
+                strings::eqs
+            ),
+        );
+
         // compat.io module (requires import)
         register_compat_io_builtins!(
             self,
@@ -617,6 +855,45 @@ impl BuiltinRegistry {
                 compat_io::println
             ),
         );
+
+        // compat.fs module (requires import - file system operations)
+        register_compat_fs_builtins!(
+            self,
+            (
+                "read_file",
+                &[("path", "[dyn]rune")],
+                "[dyn]rune",
+                compat_fs::read_file
+            ),
+            (
+                "write_file",
+                &[("path", "[dyn]rune"), ("content", "[dyn]rune")],
+                "bool",
+                compat_fs::write_file
+            ),
+            (
+                "file_exists",
+                &[("path", "[dyn]rune")],
+                "bool",
+                compat_fs::file_exists
+            ),
+        );
+
+        // compat.proc module (requires import - process operations)
+        register_compat_proc_builtins!(
+            self,
+            ("getargs", &[], "[dyn][dyn]rune", compat_proc::getargs),
+            ("exit", &[("code", "i64")], "void", compat_proc::exit),
+            (
+                "getenv",
+                &[("name", "[dyn]rune")],
+                "[dyn]rune",
+                compat_proc::getenv
+            ),
+        );
+
+        // plat.console module (requires import - platform-specific console operations)
+        register_plat_console_builtins!(self, ("readln", &[], "[dyn]rune", plat_console::readln),);
     }
 }
 

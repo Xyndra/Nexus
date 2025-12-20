@@ -2,7 +2,7 @@
     mod: 'arithmetic',
     main: 'main.nx',
     permissions: {
-        compatIO: ['arithmetic']
+        "compat.io": ['arithmetic']
     },
     deps: []
 }

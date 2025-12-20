@@ -1,9 +1,8 @@
-
 #include "nexus_core.h"
 #include <time.h>
 
 // ============================================================================
-// Compat I/O Functions
+// Compat I/O Functions (print, println)
 // ============================================================================
 
 // Helper function to print a single typed value
@@ -70,7 +69,11 @@ void nx_compat_println(nx_value* values, size_t count) {
     fflush(stdout);
 }
 
-nx_string nx_compat_readln(void) {
+// ============================================================================
+// Plat Console Functions (readln)
+// ============================================================================
+
+nx_string nx_plat_console_readln(void) {
     char buffer[4096];
     if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
         return nx_string_from_cstr("");
@@ -80,10 +83,19 @@ nx_string nx_compat_readln(void) {
     size_t len = strlen(buffer);
     if (len > 0 && buffer[len - 1] == '\n') {
         buffer[len - 1] = '\0';
+        len--;
+    }
+    // Also handle CRLF
+    if (len > 0 && buffer[len - 1] == '\r') {
+        buffer[len - 1] = '\0';
     }
 
     return nx_string_from_cstr(buffer);
 }
+
+// ============================================================================
+// Compat FS Functions (file operations)
+// ============================================================================
 
 nx_string nx_compat_read_file(const char* path) {
     FILE* file = fopen(path, "rb");

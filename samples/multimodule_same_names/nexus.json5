@@ -1,7 +1,7 @@
 {
     mod: 'same_names',
     permissions: {
-        compatIO: ['same_names', 'module_a', 'module_b'],
+        "compat.io": ['same_names', 'module_a', 'module_b'],
     },
     deps: [
         "local:./module_a",
