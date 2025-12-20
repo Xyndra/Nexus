@@ -1,0 +1,8 @@
+{
+    mod: 'generic_collections',
+    main: 'main.nx',
+    permissions: {
+        "compat.io": ['generic_collections']
+    },
+    deps: []
+}

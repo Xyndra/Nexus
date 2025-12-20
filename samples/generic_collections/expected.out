@@ -1,0 +1,10 @@
+apple: 5
+banana: 10
+cherry: 15
+unknown: 0
+has apple: true
+has grape: false
+length: 3
+apple after update: 100
+has banana after remove: false
+length after remove: 2

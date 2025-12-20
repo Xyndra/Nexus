@@ -818,6 +818,30 @@ impl BuiltinRegistry {
             ),
             ("trim", &[("s", "[dyn]rune")], "[dyn]rune", strings::trim),
             (
+                "dedent",
+                &[("s", "[dyn]rune")],
+                "[dyn]rune",
+                strings::dedent
+            ),
+            (
+                "indent",
+                &[("s", "[dyn]rune"), ("spaces", "i64")],
+                "[dyn]rune",
+                strings::indent
+            ),
+            (
+                "lowercase",
+                &[("s", "[dyn]rune")],
+                "[dyn]rune",
+                strings::lowercase
+            ),
+            (
+                "uppercase",
+                &[("s", "[dyn]rune")],
+                "[dyn]rune",
+                strings::uppercase
+            ),
+            (
                 "starts_with",
                 &[("s", "[dyn]rune"), ("prefix", "[dyn]rune")],
                 "bool",

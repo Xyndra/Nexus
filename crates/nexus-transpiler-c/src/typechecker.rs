@@ -529,11 +529,14 @@ impl<'a> TypeChecker<'a> {
         let expected_type_clone = expected_type.clone();
         if let Some(value) = &ret.value {
             let value_type = self.check_expression(value)?;
-            if !value_type.ty.is_assignable_to(&expected_type_clone) {
+            // Resolve both types to handle Named vs Struct comparisons
+            let resolved_value_type = self.type_registry.resolve_type(&value_type.ty);
+            let resolved_expected_type = self.type_registry.resolve_type(&expected_type_clone);
+            if !resolved_value_type.is_assignable_to(&resolved_expected_type) {
                 return Err(NexusError::TypeError {
                     message: format!(
                         "Cannot return value of type '{}', expected '{}'",
-                        value_type.ty, expected_type_clone
+                        resolved_value_type, resolved_expected_type
                     ),
                     span: ret.span,
                 });
@@ -1049,7 +1052,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Resolve a type expression to a concrete type
-    fn resolve_type_expr(&self, ty_expr: &TypeExpr) -> NexusType {
+    pub fn resolve_type_expr(&self, ty_expr: &TypeExpr) -> NexusType {
         match ty_expr {
             TypeExpr::Named { name, .. } => {
                 let ty = NexusType::Named(name.clone());
@@ -1088,6 +1091,16 @@ impl<'a> TypeChecker<'a> {
             }
             TypeExpr::Void { .. } => NexusType::Primitive(PrimitiveType::Void),
         }
+    }
+
+    /// Register a struct definition in the type registry
+    pub fn register_struct(&mut self, struct_def: StructDef) {
+        self.type_registry.register_struct(struct_def);
+    }
+
+    /// Register an interface definition in the type registry
+    pub fn register_interface(&mut self, interface_def: InterfaceDef) {
+        self.type_registry.register_interface(interface_def);
     }
 
     fn push_scope(&mut self) {

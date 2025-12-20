@@ -68,6 +68,8 @@ pub enum Item {
     Interface(InterfaceDefAst),
     /// Macro definition
     Macro(MacroDef),
+    /// Top-level macro call (for generating structs/functions at compile time)
+    TopLevelMacroCall(TopLevelMacroCall),
 }
 
 /// A use statement for importing symbols from modules
@@ -92,6 +94,7 @@ impl Item {
             Item::Struct(s) => &s.span,
             Item::Interface(i) => &i.span,
             Item::Macro(m) => &m.span,
+            Item::TopLevelMacroCall(c) => &c.span,
         }
     }
 }
@@ -230,6 +233,18 @@ pub struct MacroDef {
     pub params: Vec<Parameter>,
     /// Macro body (must return macro type)
     pub body: Block,
+    /// Source span
+    pub span: Span,
+}
+
+/// A top-level macro call that expands to generate items (structs, functions, etc.)
+/// Example: `$define_map("String", "[dyn]rune", "I64", "i64")`
+#[derive(Debug, Clone)]
+pub struct TopLevelMacroCall {
+    /// Macro name (without $)
+    pub name: String,
+    /// Arguments to the macro
+    pub args: Vec<Expression>,
     /// Source span
     pub span: Span,
 }

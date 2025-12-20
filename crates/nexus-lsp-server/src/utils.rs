@@ -4,7 +4,7 @@
 //! different position and span representations.
 
 use crate::types::{Position, Range};
-use nexus_core::Span;
+use nexus_core::{Span, VarModifiers};
 
 /// Convert a Position (line/character) to a byte offset in the content.
 pub fn position_to_offset(content: &str, position: Position) -> Option<usize> {
@@ -75,13 +75,13 @@ pub fn span_to_range(content: &str, span: &Span) -> Range {
 /// Extract doc comments from source content above a given span.
 ///
 /// This looks for consecutive `//` comment lines immediately preceding
-/// the span (allowing blank lines between comments).
+/// the span. Blank lines terminate the doc comment block - comments
+/// separated by blank lines are NOT joined together.
 pub fn extract_doc_comment(content: &str, span: &Span) -> String {
     let before_span = &content[..span.start];
     let lines: Vec<&str> = before_span.lines().collect();
 
     let mut comment_lines = Vec::new();
-    let mut found_non_blank = false;
 
     // Walk backwards from the end
     for line in lines.iter().rev() {
@@ -91,32 +91,49 @@ pub fn extract_doc_comment(content: &str, span: &Span) -> String {
             // Extract comment content (remove // prefix)
             let comment_content = trimmed.strip_prefix("//").unwrap_or("").trim();
             comment_lines.push(comment_content.to_string());
-            found_non_blank = true;
         } else if trimmed.is_empty() {
-            // Allow blank lines within comments, but not before finding any comment
-            if found_non_blank {
-                // Keep blank line in comments
-                comment_lines.push(String::new());
+            // Blank line - if we've found comments, stop; otherwise skip leading blanks
+            if !comment_lines.is_empty() {
+                break;
             }
-            // Continue looking
+            // Continue looking past trailing blank lines before the definition
         } else {
             // Non-comment, non-blank line - stop
             break;
         }
     }
 
-    // Reverse to get correct order and trim trailing empty lines
+    // Reverse to get correct order
     comment_lines.reverse();
 
-    // Remove leading/trailing empty lines
-    while comment_lines.first().is_some_and(|s| s.is_empty()) {
-        comment_lines.remove(0);
-    }
-    while comment_lines.last().is_some_and(|s| s.is_empty()) {
-        comment_lines.pop();
-    }
-
     comment_lines.join("\n")
+}
+
+/// Format variable modifiers for display (e.g., "m ", "c ", "mh ").
+pub fn format_var_modifiers(modifiers: &VarModifiers) -> String {
+    let mut result = String::new();
+    if modifiers.const_ {
+        result.push('c');
+    }
+    if modifiers.mutable {
+        result.push('m');
+    }
+    if modifiers.locked {
+        result.push('l');
+    }
+    if modifiers.heap {
+        result.push('h');
+    }
+    if modifiers.undetermined {
+        result.push('u');
+    }
+    if modifiers.global {
+        result.push('g');
+    }
+    if !result.is_empty() {
+        result.push(' ');
+    }
+    result
 }
 
 /// Format a type expression for display.
@@ -221,16 +238,35 @@ mod tests {
 
     #[test]
     fn test_extract_doc_comment_with_blank_lines() {
-        let content = "// First\n//\n// Third\nstd main() {}";
-        // "std main() {}" starts at position 21 (after "// Third\n")
+        // Blank lines should terminate doc comments - only "Third" should be captured
+        let content = "// First\n\n// Third\nstd main() {}";
+        // "std main() {}" starts at position 19 (after "// Third\n")
         let span = Span {
-            start: 21,
-            end: 34,
+            start: 19,
+            end: 32,
             line: 4,
             column: 1,
         };
         let comment = extract_doc_comment(content, &span);
-        assert!(comment.contains("First"));
+        assert!(
+            !comment.contains("First"),
+            "First should not be included due to blank line separation"
+        );
         assert!(comment.contains("Third"));
+    }
+
+    #[test]
+    fn test_extract_doc_comment_consecutive_lines() {
+        // Consecutive comment lines should be joined
+        let content = "// First line\n// Second line\nstd main() {}";
+        let span = Span {
+            start: 29,
+            end: 42,
+            line: 3,
+            column: 1,
+        };
+        let comment = extract_doc_comment(content, &span);
+        assert!(comment.contains("First line"));
+        assert!(comment.contains("Second line"));
     }
 }

@@ -1,0 +1,346 @@
+// Standard library generic collection macros
+// Module: std.collections.generics
+//
+// Provides macros for generating type-specific collection implementations.
+// This enables generic-like programming in Nexus without language-level generics.
+//
+// Usage:
+//   use { define_map, define_set } from std.collections.generics
+//
+//   // Generate a map from string keys to MyType values
+//   $define_map("String", "[dyn]rune", "eqs", "MyType", "MyType", "MyType {}")
+//
+//   // This generates:
+//   // - struct MapStringToMyType { ... }
+//   // - std map_string_mytype_new(): MapStringToMyType
+//   // - std map_string_mytype_set(...): MapStringToMyType
+//   // - std map_string_mytype_get(...): MyType
+//   // - std map_string_mytype_has(...): bool
+//   // - std map_string_mytype_keys(...): [dyn][dyn]rune
+//   // - std map_string_mytype_values(...): [dyn]MyType
+//   // - std map_string_mytype_len(...): i64
+//   // - std map_string_mytype_remove(...): MapStringToMyType
+
+use { format } from std.util.strings
+
+// $define_map macro
+// Parameters:
+//   key_name: Display name for the key type (e.g., "String", "I64")
+//   key_type: Actual Nexus type for keys (e.g., "[dyn]rune", "i64")
+//   key_eq: Equality function for keys (e.g., "eqs" for strings, "eqi64" for i64)
+//   value_name: Display name for the value type (e.g., "I64", "MyStruct")
+//   value_type: Actual Nexus type for values (e.g., "i64", "MyStruct")
+//   default_value: Default return value when key not found (e.g., "0", "\"\"", "MyStruct {}")
+$define_map([dyn]rune key_name, [dyn]rune key_type, [dyn]rune key_eq, [dyn]rune value_name, [dyn]rune value_type, [dyn]rune default_value): macro {
+    // Build names
+    c struct_name = $format("Map${key_name}To${value_name}")
+    c key_lower = lowercase(key_name)
+    c value_lower = lowercase(value_name)
+    c fn_prefix = $format("map_${key_lower}_${value_lower}")
+    c keys_type = $format("[dyn]${key_type}")
+    c values_type = $format("[dyn]${value_type}")
+
+    // Build struct definition
+    c struct_def = $format("struct ${struct_name} {
+    ${keys_type} keys = []
+    ${values_type} values = []
+}
+
+")
+
+    // map_xxx_new function
+    c fn_new = $format("std ${fn_prefix}_new(): ${struct_name} {
+    return ${struct_name} {}
+}
+
+")
+
+    // map_xxx_has function
+    c fn_has = $format("std ${fn_prefix}_has(${struct_name} m_map, ${key_type} key): bool {
+    m idx: i64 = 0
+    c n = len(m_map.keys)
+    m found = false
+    subscope find_key {
+        if (gei64(idx, n)) { return }
+        if (${key_eq}(m_map.keys[idx], key)) {
+            found = true
+            return
+        }
+        idx = addi64(idx, 1)
+        goto find_key
+    }
+    return found
+}
+
+")
+
+    // map_xxx_get function
+    c fn_get = $format("std ${fn_prefix}_get(${struct_name} m_map, ${key_type} key): ${value_type} {
+    m idx: i64 = 0
+    c n = len(m_map.keys)
+    m found_idx: i64 = negi64(1)
+    subscope find_key {
+        if (gei64(idx, n)) { return }
+        if (${key_eq}(m_map.keys[idx], key)) {
+            found_idx = idx
+            return
+        }
+        idx = addi64(idx, 1)
+        goto find_key
+    }
+    if (gei64(found_idx, 0)) {
+        return m_map.values[found_idx]
+    }
+    return ${default_value}
+}
+
+")
+
+    // map_xxx_set function
+    c fn_set = $format("std ${fn_prefix}_set(${struct_name} m_map, ${key_type} key, ${value_type} value): ${struct_name} {
+    m idx: i64 = 0
+    c n = len(m_map.keys)
+    m found_idx: i64 = negi64(1)
+    subscope find_key {
+        if (gei64(idx, n)) { return }
+        if (${key_eq}(m_map.keys[idx], key)) {
+            found_idx = idx
+            return
+        }
+        idx = addi64(idx, 1)
+        goto find_key
+    }
+    if (gei64(found_idx, 0)) {
+        m new_values = m_map.values
+        new_values[found_idx] = value
+        return ${struct_name} {
+            keys: m_map.keys,
+            values: new_values
+        }
+    } else {
+        return ${struct_name} {
+            keys: push(m_map.keys, key),
+            values: push(m_map.values, value)
+        }
+    }
+}
+
+")
+
+    // map_xxx_keys function
+    c fn_keys = $format("std ${fn_prefix}_keys(${struct_name} m_map): ${keys_type} {
+    return m_map.keys
+}
+
+")
+
+    // map_xxx_values function
+    c fn_values = $format("std ${fn_prefix}_values(${struct_name} m_map): ${values_type} {
+    return m_map.values
+}
+
+")
+
+    // map_xxx_len function
+    c fn_len = $format("std ${fn_prefix}_len(${struct_name} m_map): i64 {
+    return len(m_map.keys)
+}
+
+")
+
+    // map_xxx_remove function
+    c fn_remove = $format("std ${fn_prefix}_remove(${struct_name} m_map, ${key_type} key): ${struct_name} {
+    m idx: i64 = 0
+    c n = len(m_map.keys)
+    m found_idx: i64 = negi64(1)
+    subscope find_key {
+        if (gei64(idx, n)) { return }
+        if (${key_eq}(m_map.keys[idx], key)) {
+            found_idx = idx
+            return
+        }
+        idx = addi64(idx, 1)
+        goto find_key
+    }
+    if (lti64(found_idx, 0)) { return m_map }
+    m new_keys = []
+    m new_values = []
+    m i: i64 = 0
+    subscope rebuild {
+        if (gei64(i, n)) { return }
+        if (not(eqi64(i, found_idx))) {
+            new_keys = push(new_keys, m_map.keys[i])
+            new_values = push(new_values, m_map.values[i])
+        }
+        i = addi64(i, 1)
+        goto rebuild
+    }
+    return ${struct_name} {
+        keys: new_keys,
+        values: new_values
+    }
+}
+")
+
+    return $format("${struct_def}${fn_new}${fn_has}${fn_get}${fn_set}${fn_keys}${fn_values}${fn_len}${fn_remove}")
+}
+
+// $define_set macro
+// Parameters:
+//   type_name: Display name for the type (e.g., "I64", "String")
+//   type_def: Actual Nexus type (e.g., "i64", "[dyn]rune")
+//   type_eq: Equality function (e.g., "eqi64", "eqs")
+$define_set([dyn]rune type_name, [dyn]rune type_def, [dyn]rune type_eq): macro {
+    // Build names
+    c struct_name = $format("Set${type_name}")
+    c type_lower = lowercase(type_name)
+    c fn_prefix = $format("set_${type_lower}")
+    c items_type = $format("[dyn]${type_def}")
+
+    // Build struct definition
+    c struct_def = $format("struct ${struct_name} {
+    ${items_type} items = []
+}
+
+")
+
+    // set_xxx_new function
+    c fn_new = $format("std ${fn_prefix}_new(): ${struct_name} {
+    return ${struct_name} {}
+}
+
+")
+
+    // set_xxx_add function
+    c fn_add = $format("std ${fn_prefix}_add(${struct_name} s, ${type_def} value): ${struct_name} {
+    m idx: i64 = 0
+    c n = len(s.items)
+    m found = false
+    subscope find_value {
+        if (gei64(idx, n)) { return }
+        if (${type_eq}(s.items[idx], value)) {
+            found = true
+            return
+        }
+        idx = addi64(idx, 1)
+        goto find_value
+    }
+    if (found) { return s }
+    return ${struct_name} {
+        items: push(s.items, value)
+    }
+}
+
+")
+
+    // set_xxx_has function
+    c fn_has = $format("std ${fn_prefix}_has(${struct_name} s, ${type_def} value): bool {
+    m idx: i64 = 0
+    c n = len(s.items)
+    m found = false
+    subscope find_value {
+        if (gei64(idx, n)) { return }
+        if (${type_eq}(s.items[idx], value)) {
+            found = true
+            return
+        }
+        idx = addi64(idx, 1)
+        goto find_value
+    }
+    return found
+}
+
+")
+
+    // set_xxx_remove function
+    c fn_remove = $format("std ${fn_prefix}_remove(${struct_name} s, ${type_def} value): ${struct_name} {
+    m idx: i64 = 0
+    c n = len(s.items)
+    m found_idx: i64 = negi64(1)
+    subscope find_value {
+        if (gei64(idx, n)) { return }
+        if (${type_eq}(s.items[idx], value)) {
+            found_idx = idx
+            return
+        }
+        idx = addi64(idx, 1)
+        goto find_value
+    }
+    if (lti64(found_idx, 0)) { return s }
+    m new_items = []
+    m i: i64 = 0
+    subscope rebuild {
+        if (gei64(i, n)) { return }
+        if (not(eqi64(i, found_idx))) {
+            new_items = push(new_items, s.items[i])
+        }
+        i = addi64(i, 1)
+        goto rebuild
+    }
+    return ${struct_name} {
+        items: new_items
+    }
+}
+
+")
+
+    // set_xxx_array function
+    c fn_array = $format("std ${fn_prefix}_array(${struct_name} s): ${items_type} {
+    return s.items
+}
+
+")
+
+    // set_xxx_len function
+    c fn_len = $format("std ${fn_prefix}_len(${struct_name} s): i64 {
+    return len(s.items)
+}
+")
+
+    return $format("${struct_def}${fn_new}${fn_add}${fn_has}${fn_remove}${fn_array}${fn_len}")
+}
+
+// $assert_exists macro
+// Verifies that a symbol (function or struct) exists after macro expansion.
+// This is useful for ensuring that generated code from other macros is available.
+//
+// Usage:
+//   $define_map("String", "[dyn]rune", "eqs", "I64", "i64", "0")
+//   $assert_exists("MapStringToI64")
+//   $assert_exists("map_string_i64_new")
+//
+// Parameters:
+//   symbol_name: The name of the symbol to check (function, struct, or macro)
+//
+// Note: This macro generates a no-op. The actual check happens at parse/load time.
+$assert_exists([dyn]rune symbol_name): macro {
+    return ""
+}
+
+// $assert_fn_exists macro
+// Verifies that a function exists by generating a call placeholder.
+//
+// Usage:
+//   $define_map("String", "[dyn]rune", "eqs", "I64", "i64", "0")
+//   // In a function body:
+//   c check = $assert_fn_exists("map_string_i64_new")
+//
+// Parameters:
+//   fn_name: The name of the function to verify exists
+$assert_fn_exists([dyn]rune fn_name): macro {
+    return $format("${fn_name}()")
+}
+
+// $assert_struct_exists macro
+// Verifies that a struct type exists by generating a struct instantiation.
+//
+// Usage:
+//   $define_map("String", "[dyn]rune", "eqs", "I64", "i64", "0")
+//   // In a function body:
+//   c check = $assert_struct_exists("MapStringToI64")
+//
+// Parameters:
+//   struct_name: The name of the struct to verify exists
+$assert_struct_exists([dyn]rune struct_name): macro {
+    return $format("${struct_name} {}")
+}

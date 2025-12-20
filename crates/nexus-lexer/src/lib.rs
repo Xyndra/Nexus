@@ -182,7 +182,9 @@ impl<'src> Lexer<'src> {
             }
 
             // String literal
-            '"' => return self.scan_string(start_pos, start_line, start_column),
+            '"' => {
+                return self.scan_string(start_pos, start_line, start_column);
+            }
 
             // Character literal
             '\'' => return self.scan_char(start_pos, start_line, start_column),

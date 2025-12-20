@@ -34,6 +34,14 @@ pub fn parse_statement(source: &str) -> Result<Statement, NexusError> {
     parser.parse_statement()
 }
 
+/// Parse a list of top-level items (for macro expansion)
+pub fn parse_items(source: &str) -> Result<Vec<Item>, NexusError> {
+    let lexer = nexus_lexer::Lexer::new(source);
+    let tokens = lexer.tokenize()?;
+    let mut parser = Parser::new(tokens);
+    parser.parse_items()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

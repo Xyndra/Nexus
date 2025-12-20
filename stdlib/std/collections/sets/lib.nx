@@ -1,0 +1,24 @@
+// Standard library set utilities
+// Module: std.collections.sets
+//
+// Provides set data structures for common types.
+// Sets store unique values and support standard set operations.
+//
+// This module uses the $define_set macro to generate type-specific implementations.
+// Users can import these directly or use $define_set to create sets for custom types.
+
+use { define_set } from std.collections.generics
+
+// ============================================================================
+// Pre-generated set types for common types
+// ============================================================================
+
+// SetI64 - A set of unique i64 values
+// Functions: set_i64_new, set_i64_add, set_i64_has, set_i64_remove,
+//            set_i64_array, set_i64_len
+$define_set("I64", "i64", "eqi64")
+
+// SetString - A set of unique string values
+// Functions: set_string_new, set_string_add, set_string_has, set_string_remove,
+//            set_string_array, set_string_len
+$define_set("String", "[dyn]rune", "eqs")

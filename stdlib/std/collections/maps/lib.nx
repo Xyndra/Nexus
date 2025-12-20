@@ -1,0 +1,38 @@
+// Standard library map utilities
+// Module: std.collections.maps
+//
+// Provides map (dictionary/hash table) implementations for common types.
+// Maps store key-value pairs and allow efficient lookup by key.
+//
+// This module uses the $define_map macro to generate type-specific implementations.
+// Users can import these directly or use $define_map to create maps for custom types.
+
+use { define_map } from std.collections.generics
+
+// ============================================================================
+// Pre-generated map types for common type combinations
+// ============================================================================
+
+// MapStringToI64 - Maps string keys to i64 values
+// Functions: map_string_i64_new, map_string_i64_set, map_string_i64_get,
+//            map_string_i64_has, map_string_i64_keys, map_string_i64_values,
+//            map_string_i64_len, map_string_i64_remove
+$define_map("String", "[dyn]rune", "eqs", "I64", "i64", "0")
+
+// MapStringToString - Maps string keys to string values
+// Functions: map_string_string_new, map_string_string_set, map_string_string_get,
+//            map_string_string_has, map_string_string_keys, map_string_string_values,
+//            map_string_string_len, map_string_string_remove
+$define_map("String", "[dyn]rune", "eqs", "String", "[dyn]rune", "\"\"")
+
+// MapI64ToI64 - Maps i64 keys to i64 values
+// Functions: map_i64_i64_new, map_i64_i64_set, map_i64_i64_get,
+//            map_i64_i64_has, map_i64_i64_keys, map_i64_i64_values,
+//            map_i64_i64_len, map_i64_i64_remove
+$define_map("I64", "i64", "eqi64", "I64", "i64", "0")
+
+// MapI64ToString - Maps i64 keys to string values
+// Functions: map_i64_string_new, map_i64_string_set, map_i64_string_get,
+//            map_i64_string_has, map_i64_string_keys, map_i64_string_values,
+//            map_i64_string_len, map_i64_string_remove
+$define_map("I64", "i64", "eqi64", "String", "[dyn]rune", "\"\"")

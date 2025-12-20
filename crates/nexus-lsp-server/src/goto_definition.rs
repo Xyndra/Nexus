@@ -50,6 +50,17 @@ pub fn find_definition(
                 }
             }
         }
+        if let Item::Macro(macro_def) = item
+            && macro_def.body.span.contains(offset)
+        {
+            for stmt in &macro_def.body.statements {
+                if let Some(loc) = find_definition_in_statement(
+                    uri, content, stmt, offset, ast, &imports, documents,
+                ) {
+                    return Some(loc);
+                }
+            }
+        }
     }
 
     None
@@ -118,6 +129,127 @@ fn find_struct_in_all_documents(
         }
     }
     None
+}
+
+/// Try to find a macro definition across all open documents.
+fn find_macro_in_all_documents(
+    name: &str,
+    documents: &HashMap<String, (String, Option<Program>)>,
+) -> Option<Location> {
+    for (doc_uri, (content, ast_opt)) in documents {
+        if let Some(ast) = ast_opt {
+            for item in &ast.items {
+                if let Item::Macro(macro_def) = item {
+                    if macro_def.name == name {
+                        // The macro name starts after the $ sign
+                        let name_start = macro_def.span.start + 1;
+                        let name_end = name_start + macro_def.name.len();
+                        let name_span = nexus_core::Span {
+                            start: name_start,
+                            end: name_end,
+                            line: macro_def.span.line,
+                            column: macro_def.span.column + 1,
+                        };
+                        return Some(Location {
+                            uri: doc_uri.clone(),
+                            range: span_to_range(content, &name_span),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Try to find a variable definition in a function body.
+/// Returns the location of the variable declaration if found.
+fn find_variable_in_function(
+    uri: &str,
+    content: &str,
+    var_name: &str,
+    statements: &[Statement],
+) -> Option<Location> {
+    for stmt in statements {
+        match stmt {
+            Statement::VarDecl(var_decl) => {
+                if var_decl.name == var_name {
+                    return Some(Location {
+                        uri: uri.to_string(),
+                        range: span_to_range(content, &var_decl.span),
+                    });
+                }
+            }
+            Statement::If(if_stmt) => {
+                // Check in then block
+                if let Some(loc) = find_variable_in_function(
+                    uri,
+                    content,
+                    var_name,
+                    &if_stmt.then_block.statements,
+                ) {
+                    return Some(loc);
+                }
+                // Check in else block
+                if let Some(else_clause) = &if_stmt.else_block {
+                    if let Some(loc) =
+                        find_variable_in_else_clause(uri, content, var_name, else_clause)
+                    {
+                        return Some(loc);
+                    }
+                }
+            }
+            Statement::Subscope(subscope) => {
+                if let Some(loc) =
+                    find_variable_in_function(uri, content, var_name, &subscope.body.statements)
+                {
+                    return Some(loc);
+                }
+            }
+            Statement::Block(block) => {
+                if let Some(loc) =
+                    find_variable_in_function(uri, content, var_name, &block.statements)
+                {
+                    return Some(loc);
+                }
+            }
+            Statement::Defer(defer) => {
+                if let Some(loc) =
+                    find_variable_in_function(uri, content, var_name, &defer.body.statements)
+                {
+                    return Some(loc);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Helper for finding variables in else clauses.
+fn find_variable_in_else_clause(
+    uri: &str,
+    content: &str,
+    var_name: &str,
+    else_clause: &nexus_parser::ElseClause,
+) -> Option<Location> {
+    match else_clause {
+        nexus_parser::ElseClause::Block(block) => {
+            find_variable_in_function(uri, content, var_name, &block.statements)
+        }
+        nexus_parser::ElseClause::ElseIf(if_stmt) => {
+            if let Some(loc) =
+                find_variable_in_function(uri, content, var_name, &if_stmt.then_block.statements)
+            {
+                return Some(loc);
+            }
+            if let Some(else_clause) = &if_stmt.else_block {
+                find_variable_in_else_clause(uri, content, var_name, else_clause)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// Find definition in a statement.
@@ -343,9 +475,84 @@ fn find_definition_in_expression(
             }
             None
         }
-        Expression::Variable(_var_ref) => {
-            // For now, we don't track variable definitions
-            // This would require building a symbol table
+        Expression::Variable(var_ref) => {
+            // Check if cursor is on the variable reference
+            if var_ref.span.contains(offset) {
+                // Search for variable definition in current function/method
+                for item in &ast.items {
+                    match item {
+                        Item::Function(func) => {
+                            // Check function parameters first
+                            for param in &func.params {
+                                if param.name == var_ref.name {
+                                    return Some(Location {
+                                        uri: uri.to_string(),
+                                        range: span_to_range(content, &param.span),
+                                    });
+                                }
+                            }
+                            // Check variable declarations in function body
+                            if let Some(loc) = find_variable_in_function(
+                                uri,
+                                content,
+                                &var_ref.name,
+                                &func.body.statements,
+                            ) {
+                                return Some(loc);
+                            }
+                        }
+                        Item::Method(method) => {
+                            // Check receiver
+                            if method.receiver_name == var_ref.name {
+                                // Use the method's span as we don't have a separate receiver_span
+                                return Some(Location {
+                                    uri: uri.to_string(),
+                                    range: span_to_range(content, &method.span),
+                                });
+                            }
+                            // Check method parameters
+                            for param in &method.params {
+                                if param.name == var_ref.name {
+                                    return Some(Location {
+                                        uri: uri.to_string(),
+                                        range: span_to_range(content, &param.span),
+                                    });
+                                }
+                            }
+                            // Check variable declarations in method body
+                            if let Some(loc) = find_variable_in_function(
+                                uri,
+                                content,
+                                &var_ref.name,
+                                &method.body.statements,
+                            ) {
+                                return Some(loc);
+                            }
+                        }
+                        Item::Macro(macro_def) => {
+                            // Check macro parameters
+                            for param in &macro_def.params {
+                                if param.name == var_ref.name {
+                                    return Some(Location {
+                                        uri: uri.to_string(),
+                                        range: span_to_range(content, &param.span),
+                                    });
+                                }
+                            }
+                            // Check variable declarations in macro body
+                            if let Some(loc) = find_variable_in_function(
+                                uri,
+                                content,
+                                &var_ref.name,
+                                &macro_def.body.statements,
+                            ) {
+                                return Some(loc);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             None
         }
         Expression::StructInit(struct_init) => {
@@ -458,6 +665,35 @@ fn find_definition_in_expression(
             find_definition_in_expression(uri, content, inner, offset, ast, imports, documents)
         }
         Expression::MacroCall(macro_call) => {
+            // Check if cursor is on the macro name
+            let name_start = macro_call.span.start + 1; // After $
+            let name_end = name_start + macro_call.name.len();
+            if offset >= name_start && offset < name_end {
+                // Try to find macro definition in current document
+                for item in &ast.items {
+                    if let Item::Macro(macro_def) = item {
+                        if macro_def.name == macro_call.name {
+                            let def_name_start = macro_def.span.start + 1;
+                            let def_name_end = def_name_start + macro_def.name.len();
+                            let name_span = nexus_core::Span {
+                                start: def_name_start,
+                                end: def_name_end,
+                                line: macro_def.span.line,
+                                column: macro_def.span.column + 1,
+                            };
+                            return Some(Location {
+                                uri: uri.to_string(),
+                                range: span_to_range(content, &name_span),
+                            });
+                        }
+                    }
+                }
+                // Try to find in all documents
+                if let Some(loc) = find_macro_in_all_documents(&macro_call.name, documents) {
+                    return Some(loc);
+                }
+            }
+
             // Check arguments of macro calls
             for arg in &macro_call.args {
                 if let Some(loc) = find_definition_in_expression(

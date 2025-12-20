@@ -53,14 +53,11 @@
 
 ; Identifiers in expressions
 (call_expression function: (identifier) @local.reference)
-(field_access object: (identifier) @local.reference)
+(field_access_expression object: (identifier) @local.reference)
 (index_expression array: (identifier) @local.reference)
 
 ; Goto references
 (goto_statement (identifier) @local.reference)
-
-; Break references
-(break_statement (identifier) @local.reference)
 
 ; Type references
 (named_type) @local.reference

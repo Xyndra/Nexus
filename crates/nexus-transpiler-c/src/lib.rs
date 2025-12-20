@@ -12,7 +12,8 @@ pub use runtime::{RUNTIME_HEADER, generate_runtime};
 pub use typechecker::TypeChecker;
 
 use nexus_core::{NexusError, NexusResult};
-use nexus_parser::Program;
+use nexus_lsp_server::macro_expansion::{MacroExpansionContext, MacroExpansionResult};
+use nexus_parser::{Item, Program};
 use nexus_project::{ResolvedProject, load_and_resolve_project_with_stdlib};
 use nexus_types::TypeRegistry;
 use std::collections::HashMap;
@@ -130,21 +131,48 @@ impl CTranspiler {
         let mut module_names = HashMap::new();
 
         // First, parse all modules
+        let mut all_programs: Vec<Program> = Vec::new();
         for module_source in &resolved.sources {
             let source = &module_source.content;
             let program = nexus_parser::parse(source).map_err(|e| NexusError::InternalError {
                 message: format!("Failed to parse module {}: {}", module_source.name, e),
             })?;
+            all_programs.push(program);
+        }
 
-            // Register all types from this module first
-            typechecker.register_types(&program)?;
+        // Build macro expansion context from all parsed programs
+        let macro_ctx = MacroExpansionContext::from_programs(all_programs.iter());
+
+        // Now register types, expanding top-level macros as needed
+        // Also build expanded programs that include macro-generated items
+        for (idx, module_source) in resolved.sources.iter().enumerate() {
+            let program = &all_programs[idx];
+
+            // Collect expanded items for this module
+            let mut expanded_items: Vec<Item> = Vec::new();
+
+            // Expand top-level macros and register types from expanded items
+            for item in &program.items {
+                Self::expand_item_recursive(
+                    item,
+                    &macro_ctx,
+                    &mut typechecker,
+                    &mut expanded_items,
+                )?;
+            }
+
+            // Create expanded program with macro-generated items included
+            let expanded_program = Program {
+                items: expanded_items,
+                span: program.span,
+            };
 
             let module_path = module_source.path.clone();
             module_names.insert(module_path.clone(), module_source.name.clone());
-            typed_programs.insert(module_path, program);
+            typed_programs.insert(module_path, expanded_program);
         }
 
-        // Register all functions and methods from all modules
+        // Register all functions and methods from all modules (now includes macro-generated functions)
         for (module_path, program) in typed_programs.iter() {
             let module_name = module_names.get(module_path).unwrap();
             typechecker.register_functions(program, module_name)?;
@@ -156,6 +184,134 @@ impl CTranspiler {
         }
 
         Ok(typed_programs)
+    }
+
+    /// Recursively expand an item, handling nested top-level macro calls
+    fn expand_item_recursive(
+        item: &Item,
+        macro_ctx: &MacroExpansionContext,
+        typechecker: &mut TypeChecker,
+        expanded_items: &mut Vec<Item>,
+    ) -> NexusResult<()> {
+        match item {
+            Item::Struct(s) => {
+                // Register struct directly
+                Self::register_struct_from_ast(typechecker, s)?;
+                expanded_items.push(item.clone());
+            }
+            Item::Interface(i) => {
+                // Register interface directly
+                Self::register_interface_from_ast(typechecker, i)?;
+                expanded_items.push(item.clone());
+            }
+            Item::TopLevelMacroCall(macro_call) => {
+                // Expand the macro and register generated types
+                let expansion_result = macro_ctx.expand_macro(&macro_call.name, &macro_call.args);
+                match expansion_result {
+                    MacroExpansionResult::Success { code } => {
+                        let macro_expanded_items =
+                            nexus_parser::parse_items(&code).map_err(|e| {
+                                NexusError::InternalError {
+                                    message: format!(
+                                        "Failed to parse macro expansion for '{}': {}",
+                                        macro_call.name, e
+                                    ),
+                                }
+                            })?;
+                        // Recursively process expanded items (handles nested macro calls)
+                        for expanded_item in macro_expanded_items {
+                            Self::expand_item_recursive(
+                                &expanded_item,
+                                macro_ctx,
+                                typechecker,
+                                expanded_items,
+                            )?;
+                        }
+                    }
+                    MacroExpansionResult::NotFound => {
+                        // Macro not found - keep original item, will be caught later
+                        expanded_items.push(item.clone());
+                    }
+                    MacroExpansionResult::RuntimeOnly { .. } => {
+                        // Runtime-only macro - keep original item
+                        expanded_items.push(item.clone());
+                    }
+                    MacroExpansionResult::Error { message } => {
+                        return Err(NexusError::InternalError {
+                            message: format!(
+                                "Macro expansion error for '{}': {}",
+                                macro_call.name, message
+                            ),
+                        });
+                    }
+                }
+            }
+            _ => {
+                expanded_items.push(item.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Register a struct from AST into the typechecker
+    fn register_struct_from_ast(
+        typechecker: &mut TypeChecker,
+        s: &nexus_parser::StructDefAst,
+    ) -> NexusResult<()> {
+        use nexus_types::{StructDef, StructField};
+
+        let mut struct_def = StructDef::new(s.name.clone(), s.span);
+
+        for f in &s.fields {
+            let ty = typechecker.resolve_type_expr(&f.ty);
+            let field = StructField::new(f.name.clone(), ty, f.span);
+            struct_def.add_field(field);
+        }
+
+        for impl_name in &s.implements {
+            struct_def.add_impl(impl_name.clone());
+        }
+
+        typechecker.register_struct(struct_def);
+        Ok(())
+    }
+
+    /// Register an interface from AST into the typechecker
+    fn register_interface_from_ast(
+        typechecker: &mut TypeChecker,
+        i: &nexus_parser::InterfaceDefAst,
+    ) -> NexusResult<()> {
+        use nexus_types::{InterfaceDef, InterfaceMethod, MethodParam};
+
+        let mut interface_def = InterfaceDef::new(i.name.clone(), i.span);
+
+        for m in &i.methods {
+            let mut method = InterfaceMethod::new(
+                m.name.clone(),
+                typechecker.resolve_type_expr(&m.return_type),
+                m.span,
+            )
+            .with_color(m.color);
+
+            if m.receiver_mutable {
+                method = method.with_mutable_receiver();
+            }
+
+            for p in &m.params {
+                let param =
+                    MethodParam::new(p.name.clone(), typechecker.resolve_type_expr(&p.ty), p.span);
+                method = method.with_param(param);
+            }
+
+            interface_def.add_method(method);
+        }
+
+        for ext in &i.extends {
+            interface_def.extend(ext.clone());
+        }
+
+        typechecker.register_interface(interface_def);
+        Ok(())
     }
 
     /// Generate C code for a single program

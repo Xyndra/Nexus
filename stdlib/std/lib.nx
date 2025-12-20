@@ -14,15 +14,77 @@
 //   - sum_i64: Sum all values
 //   - reverse_i64: Reverse an array
 //
+// - std.collections.maps: Map/dictionary data structures
+//   - MapStringToI64: Maps string keys to i64 values
+//     - map_string_i64_new, map_string_i64_set, map_string_i64_get
+//     - map_string_i64_has, map_string_i64_keys, map_string_i64_values
+//     - map_string_i64_len, map_string_i64_remove
+//   - MapStringToString: Maps string keys to string values
+//     - map_string_string_new, map_string_string_set, map_string_string_get
+//     - map_string_string_has, map_string_string_keys, map_string_string_values
+//     - map_string_string_len, map_string_string_remove
+//   - MapI64ToI64: Maps i64 keys to i64 values
+//     - map_i64_i64_new, map_i64_i64_set, map_i64_i64_get
+//     - map_i64_i64_has, map_i64_i64_keys, map_i64_i64_values
+//     - map_i64_i64_len, map_i64_i64_remove
+//   - MapI64ToString: Maps i64 keys to string values
+//     - map_i64_string_new, map_i64_string_set, map_i64_string_get
+//     - map_i64_string_has, map_i64_string_keys, map_i64_string_values
+//     - map_i64_string_len, map_i64_string_remove
+//
+// - std.collections.sets: Set data structures
+//   - SetI64: A set of unique i64 values
+//     - set_i64_new, set_i64_add, set_i64_has, set_i64_remove
+//     - set_i64_array, set_i64_len
+//     - set_i64_union, set_i64_intersection, set_i64_difference
+//   - SetString: A set of unique string values
+//     - set_string_new, set_string_add, set_string_has, set_string_remove
+//     - set_string_array, set_string_len
+//     - set_string_union, set_string_intersection, set_string_difference
+//
+// - std.collections.generics: Generic collection macros
+//   - $define_map: Generate a type-specific map implementation
+//     - Parameters: key_name, key_type, key_eq, value_name, value_type, default_value
+//     - Generates: struct Map{Key}To{Value}, map_{key}_{value}_new/set/get/has/keys/values/len/remove
+//   - $define_set: Generate a type-specific set implementation
+//     - Parameters: type_name, type_def, type_eq
+//     - Generates: struct Set{Type}, set_{type}_new/add/has/remove/array/len
+//   - $assert_fn_exists: Verify a function exists after macro expansion
+//   - $assert_struct_exists: Verify a struct exists after macro expansion
+//
 // - std.util: General utility functions and macros
 //   - std.util.strings: String formatting utilities ($format macro)
 //
 // Usage:
 //   use { sort_i64, unique_i64 } from std.collections
-//   use { $format } from std.util.strings
+//   use { MapStringToI64, map_string_i64_new, map_string_i64_set, map_string_i64_get } from std.collections.maps
+//   use { SetI64, set_i64_new, set_i64_add, set_i64_array } from std.collections.sets
+//   use { define_map, define_set } from std.collections.generics
+//   use { format } from std.util.strings
 //
 //   std main(): void {
 //       m arr = [3, 1, 4, 1, 5, 9, 2, 6]
 //       c sorted = sort_i64(arr)
 //       c unique = unique_i64(sorted)
+//
+//       m my_map = map_string_i64_new()
+//       my_map = map_string_i64_set(my_map, "hello", 42)
+//       c value = map_string_i64_get(my_map, "hello")
+//
+//       m my_set = set_i64_new()
+//       my_set = set_i64_add(my_set, 1)
+//       my_set = set_i64_add(my_set, 2)
+//       c items = set_i64_array(my_set)
+//   }
+//
+// Using generic macros to generate custom maps:
+//   use { define_map } from std.collections.generics
+//
+//   // At top level - generates MapStringToMyType and all associated functions
+//   $define_map("String", "[dyn]rune", "eqs", "MyType", "MyType", "MyType {}")
+//
+//   compat main(): void {
+//       m my_map = map_string_mytype_new()
+//       my_map = map_string_mytype_set(my_map, "key", MyType { value: 42 })
+//       c val = map_string_mytype_get(my_map, "key")
 //   }

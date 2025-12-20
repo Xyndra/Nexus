@@ -10,7 +10,9 @@ use nexus_parser::{Expression, IfCondition, Item, Program, Statement};
 use crate::builtins;
 use crate::macro_expansion::{MacroExpansionContext, generate_macro_hover};
 use crate::types::HoverInfo;
-use crate::utils::{extract_doc_comment, format_parameter, format_type_expr, span_to_range};
+use crate::utils::{
+    extract_doc_comment, format_parameter, format_type_expr, format_var_modifiers, span_to_range,
+};
 
 /// Find hover information at the given offset in the document.
 pub fn find_hover(
@@ -136,6 +138,31 @@ pub fn find_hover(
     }
     let macro_ctx = MacroExpansionContext::from_programs(programs_for_macros);
 
+    // Look for top-level macro calls - show hover with expansion
+    for item in &ast.items {
+        if let Item::TopLevelMacroCall(macro_call) = item {
+            // Check if cursor is on the macro name (after $ and before ()
+            let name_start = macro_call.span.start + 1;
+            let name_end = name_start + macro_call.name.len();
+
+            if offset >= name_start && offset < name_end {
+                // Cursor is on the macro name - show macro info with expansion
+                if let Some(macro_def) = macro_ctx.get_macro(&macro_call.name) {
+                    let doc_comment = extract_doc_comment(content, &macro_def.span);
+                    let expansion_result =
+                        macro_ctx.expand_macro(&macro_call.name, &macro_call.args);
+                    let hover_content =
+                        generate_macro_hover(macro_def, &expansion_result, &doc_comment);
+
+                    return Some(HoverInfo {
+                        contents: hover_content,
+                        range: Some(span_to_range(content, &macro_call.span)),
+                    });
+                }
+            }
+        }
+    }
+
     // Look for function calls - show hover for the called function
     let imports = collect_imports(ast);
     for item in &ast.items {
@@ -234,14 +261,44 @@ fn find_hover_in_statement(
     macro_ctx: &MacroExpansionContext,
 ) -> Option<HoverInfo> {
     match stmt {
-        Statement::VarDecl(var_decl) => find_hover_in_expression(
-            content,
-            &var_decl.init,
-            offset,
-            imports,
-            documents,
-            macro_ctx,
-        ),
+        Statement::VarDecl(var_decl) => {
+            // Check if cursor is on the variable declaration (before the = sign)
+            // We approximate the name position from the span start
+            if var_decl.span.contains(offset) {
+                // Check if we're in the init expression first
+                if var_decl.init.span().contains(offset) {
+                    return find_hover_in_expression(
+                        content,
+                        &var_decl.init,
+                        offset,
+                        imports,
+                        documents,
+                        macro_ctx,
+                    );
+                }
+
+                // Otherwise show variable info
+                let type_str = if let Some(ref ty) = var_decl.ty {
+                    format_type_expr(ty)
+                } else {
+                    // Inferred type - show as "inferred"
+                    "inferred".to_string()
+                };
+
+                let modifiers = format_var_modifiers(&var_decl.modifiers);
+                let hover_content = format!(
+                    "```nexus\n{}{}: {}\n```",
+                    modifiers, var_decl.name, type_str
+                );
+
+                return Some(HoverInfo {
+                    contents: hover_content,
+                    range: Some(span_to_range(content, &var_decl.span)),
+                });
+            }
+
+            None
+        }
         Statement::Assignment(assign) => find_hover_in_expression(
             content,
             &assign.value,

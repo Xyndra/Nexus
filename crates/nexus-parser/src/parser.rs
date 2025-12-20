@@ -36,13 +36,29 @@ impl Parser {
         Ok(Program::new(items, start_span.to(&end_span)))
     }
 
+    /// Parse a list of top-level items (for macro expansion).
+    /// Unlike parse_program, this returns a Vec<Item> instead of a Program.
+    pub fn parse_items(&mut self) -> Result<Vec<Item>, NexusError> {
+        let mut items = Vec::new();
+
+        self.skip_terminators();
+
+        while !self.is_at_end() {
+            let item = self.parse_item()?;
+            items.push(item);
+            self.skip_terminators();
+        }
+
+        Ok(items)
+    }
+
     /// Parse a top-level item.
     fn parse_item(&mut self) -> Result<Item, NexusError> {
         match self.peek_kind() {
             TokenKind::Use => self.parse_use_statement().map(Item::Use),
             TokenKind::Struct => self.parse_struct().map(Item::Struct),
             TokenKind::Interface => self.parse_interface().map(Item::Interface),
-            TokenKind::Dollar => self.parse_macro_def().map(Item::Macro),
+            TokenKind::Dollar => self.parse_macro_def_or_call(),
             TokenKind::Std | TokenKind::Compat | TokenKind::Plat => self.parse_function_or_method(),
             _ => {
                 Err(self
@@ -336,28 +352,142 @@ impl Parser {
         })
     }
 
-    /// Parse a macro definition.
-    fn parse_macro_def(&mut self) -> Result<MacroDef, NexusError> {
+    /// Parse a macro definition or top-level macro call.
+    /// Macro definition: `$name(...): macro { ... }`
+    /// Top-level macro call: `$name(...)`
+    fn parse_macro_def_or_call(&mut self) -> Result<Item, NexusError> {
         let start_span = self.current_span();
         self.expect(TokenKind::Dollar)?;
 
         let name = self.expect_identifier()?;
 
         self.expect(TokenKind::LeftParen)?;
-        let params = self.parse_parameters()?;
-        self.expect(TokenKind::RightParen)?;
 
-        self.expect(TokenKind::Colon)?;
-        self.expect(TokenKind::Macro)?;
+        // Look ahead to see if this is a definition (has typed params) or a call (has expressions)
+        // For now, we check if the next token after closing paren is `:` for definition
+        // We need to parse the content first, then decide based on what follows
 
-        let body = self.parse_block()?;
+        // Save position to potentially backtrack
+        let params_start = self.current;
 
-        Ok(MacroDef {
-            name,
-            params,
-            body,
-            span: start_span.to(&self.previous_span()),
-        })
+        // Try to determine if this is a definition by looking for type patterns
+        // A definition has parameters like `[dyn]rune name` while a call has expressions like `"string"`
+        let is_definition = self.looks_like_macro_params();
+
+        // Reset position
+        self.current = params_start;
+
+        if is_definition {
+            // Parse as definition
+            let params = self.parse_parameters()?;
+            self.expect(TokenKind::RightParen)?;
+            self.expect(TokenKind::Colon)?;
+            self.expect(TokenKind::Macro)?;
+            let body = self.parse_block()?;
+
+            Ok(Item::Macro(MacroDef {
+                name,
+                params,
+                body,
+                span: start_span.to(&self.previous_span()),
+            }))
+        } else {
+            // Parse as top-level macro call
+            let args = self.parse_macro_call_args()?;
+            self.expect(TokenKind::RightParen)?;
+
+            Ok(Item::TopLevelMacroCall(TopLevelMacroCall {
+                name,
+                args,
+                span: start_span.to(&self.previous_span()),
+            }))
+        }
+    }
+
+    /// Parse arguments for a macro call (comma-separated expressions)
+    fn parse_macro_call_args(&mut self) -> Result<Vec<Expression>, NexusError> {
+        let mut args = Vec::new();
+
+        if !self.check(TokenKind::RightParen) {
+            args.push(self.parse_expression()?);
+            while self.check(TokenKind::Comma) {
+                self.advance();
+                if self.check(TokenKind::RightParen) {
+                    break; // Allow trailing comma
+                }
+                args.push(self.parse_expression()?);
+            }
+        }
+
+        Ok(args)
+    }
+
+    /// Check if the current position looks like macro parameters (for a definition)
+    /// rather than expression arguments (for a call).
+    /// Returns true if it looks like `[dyn]Type name` or `Type name` patterns.
+    fn looks_like_macro_params(&mut self) -> bool {
+        // If empty params, check what follows the closing paren
+        if self.check(TokenKind::RightParen) {
+            // Look ahead past the closing paren
+            let saved = self.current;
+            self.advance(); // skip )
+            let is_def = self.check(TokenKind::Colon);
+            self.current = saved;
+            return is_def;
+        }
+
+        // Check first token - if it's a string literal, it's definitely a call
+        if self.check_string_literal() || self.check_int_literal() {
+            return false;
+        }
+
+        // If it starts with `[`, it could be array type (definition) or array literal (call)
+        // Array types are like `[dyn]Type` or `[5]Type`
+        // Array literals would be followed by expressions
+        if self.check(TokenKind::LeftBracket) {
+            let saved = self.current;
+            self.advance(); // skip [
+
+            // Check if it's [dyn] or [number] - type syntax
+            let looks_like_type = self.check(TokenKind::Dyn) || self.check_int_literal();
+            self.current = saved;
+
+            if looks_like_type {
+                return true;
+            }
+            return false;
+        }
+
+        // If it's an identifier, check if it's followed by another identifier (Type name pattern)
+        // or by a comma/close paren (expression)
+        if self.check_any_identifier() {
+            let saved = self.current;
+            self.advance(); // skip first identifier
+
+            // If followed by another identifier, it's likely `Type name` pattern
+            let is_type_name_pattern = self.check_any_identifier();
+            self.current = saved;
+
+            return is_type_name_pattern;
+        }
+
+        // Default to definition for other cases
+        true
+    }
+
+    /// Check if current token is any string literal
+    fn check_string_literal(&self) -> bool {
+        matches!(self.peek_kind(), TokenKind::StringLiteral(_))
+    }
+
+    /// Check if current token is any int literal
+    fn check_int_literal(&self) -> bool {
+        matches!(self.peek_kind(), TokenKind::IntLiteral(_))
+    }
+
+    /// Check if current token is any identifier
+    fn check_any_identifier(&self) -> bool {
+        matches!(self.peek_kind(), TokenKind::Identifier(_))
     }
 
     /// Parse function color (std, compat, plat).

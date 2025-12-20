@@ -365,14 +365,28 @@ fn run_resolved_project(
         parsed_programs.push((&source.name, program));
     }
 
-    // Second pass: load each module's source with the correct current module set
+    // Second pass: register all definitions (without expanding macros)
+    // This ensures all macros are available before any expansion happens
     for (module_name, program) in &parsed_programs {
         // Set the current module before loading
         interpreter.set_current_module(*module_name);
 
-        // Load the program (this will check permissions on use statements)
-        interpreter.load_program(program)?;
+        // Register definitions (phase 1)
+        interpreter.register_definitions(program)?;
     }
+
+    // Third pass: expand all top-level macro calls
+    // Now that all macros are registered, we can safely expand them
+    for (module_name, program) in &parsed_programs {
+        interpreter.set_current_module(*module_name);
+
+        // Expand top-level macros (phase 2)
+        interpreter.expand_pending_macros(program)?;
+    }
+
+    // Fourth pass: process pending imports
+    // Now that macros are expanded, macro-generated symbols are available for import
+    interpreter.process_pending_imports()?;
 
     // Set current module to the main project module before running
     interpreter.set_current_module(&resolved.config.module_name);
@@ -637,11 +651,20 @@ fn test_resolved_project(
         parsed_programs.push((&source.name, program));
     }
 
-    // Second pass: load each module's source with the correct current module set
+    // Second pass: register all definitions (without expanding macros)
     for (module_name, program) in &parsed_programs {
         interpreter.set_current_module(*module_name);
-        interpreter.load_program(program)?;
+        interpreter.register_definitions(program)?;
     }
+
+    // Third pass: expand all top-level macro calls
+    for (module_name, program) in &parsed_programs {
+        interpreter.set_current_module(*module_name);
+        interpreter.expand_pending_macros(program)?;
+    }
+
+    // Fourth pass: process pending imports
+    interpreter.process_pending_imports()?;
 
     if all_test_functions.is_empty() {
         println!("No test functions found in {}", resolved.config.module_name);

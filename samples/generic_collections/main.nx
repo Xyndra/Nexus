@@ -1,0 +1,37 @@
+use { println } from compat.io
+use { define_map } from std.collections.generics
+
+// Use the macro to generate a map from strings to i64 values
+$define_map("String", "[dyn]rune", "eqs", "I64", "i64", "0")
+
+compat main(): void {
+    // Create a new map
+    m my_map = map_string_i64_new()
+
+    // Add some values
+    my_map = map_string_i64_set(my_map, "apple", 5)
+    my_map = map_string_i64_set(my_map, "banana", 10)
+    my_map = map_string_i64_set(my_map, "cherry", 15)
+
+    // Get values
+    println("apple:", map_string_i64_get(my_map, "apple"))
+    println("banana:", map_string_i64_get(my_map, "banana"))
+    println("cherry:", map_string_i64_get(my_map, "cherry"))
+    println("unknown:", map_string_i64_get(my_map, "unknown"))
+
+    // Check if keys exist
+    println("has apple:", map_string_i64_has(my_map, "apple"))
+    println("has grape:", map_string_i64_has(my_map, "grape"))
+
+    // Get length
+    println("length:", map_string_i64_len(my_map))
+
+    // Update a value
+    my_map = map_string_i64_set(my_map, "apple", 100)
+    println("apple after update:", map_string_i64_get(my_map, "apple"))
+
+    // Remove a key
+    my_map = map_string_i64_remove(my_map, "banana")
+    println("has banana after remove:", map_string_i64_has(my_map, "banana"))
+    println("length after remove:", map_string_i64_len(my_map))
+}

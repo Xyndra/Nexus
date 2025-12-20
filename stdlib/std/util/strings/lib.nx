@@ -6,6 +6,9 @@
 //
 // Usage: $format("Name: ${name} Age: ${age}")
 // Generates: concat(concat(concat("Name: ", str(name)), " Age: "), str(age))
+//
+// Note: str() on a string is a no-op, so this works for both string variables
+// and other types (integers, floats, bools, arrays, etc.)
 
 $format([dyn]rune template): macro {
     m result = ""

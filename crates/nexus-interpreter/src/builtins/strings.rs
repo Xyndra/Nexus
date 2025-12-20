@@ -74,6 +74,36 @@ pub fn trim(args: &[Value], span: Span) -> NexusResult<Value> {
     Ok(Value::String(s.trim().chars().collect()))
 }
 
+/// Convert a rune array to lowercase
+pub fn lowercase(args: &[Value], span: Span) -> NexusResult<Value> {
+    let s = match &args[0] {
+        Value::String(chars) => chars.iter().collect::<String>(),
+        _ => {
+            return Err(NexusError::TypeError {
+                message: "lowercase expects a rune array argument".to_string(),
+                span,
+            });
+        }
+    };
+
+    Ok(Value::String(s.to_lowercase().chars().collect()))
+}
+
+/// Convert a rune array to uppercase
+pub fn uppercase(args: &[Value], span: Span) -> NexusResult<Value> {
+    let s = match &args[0] {
+        Value::String(chars) => chars.iter().collect::<String>(),
+        _ => {
+            return Err(NexusError::TypeError {
+                message: "uppercase expects a rune array argument".to_string(),
+                span,
+            });
+        }
+    };
+
+    Ok(Value::String(s.to_uppercase().chars().collect()))
+}
+
 /// Check if a rune array starts with a prefix
 pub fn starts_with(args: &[Value], span: Span) -> NexusResult<Value> {
     let s = match &args[0] {
@@ -171,6 +201,99 @@ pub fn join(args: &[Value], span: Span) -> NexusResult<Value> {
         .collect();
 
     Ok(Value::String(strings?.join(&delimiter).chars().collect()))
+}
+
+/// Strip common leading indentation from a multiline string.
+/// This is useful for making multiline string literals more readable in code.
+///
+/// Example:
+///   dedent("    line1\n    line2") => "line1\nline2"
+pub fn dedent(args: &[Value], span: Span) -> NexusResult<Value> {
+    let s = match &args[0] {
+        Value::String(chars) => chars.iter().collect::<String>(),
+        _ => {
+            return Err(NexusError::TypeError {
+                message: "dedent expects a rune array argument".to_string(),
+                span,
+            });
+        }
+    };
+
+    // Split into lines
+    let lines: Vec<&str> = s.lines().collect();
+
+    if lines.is_empty() {
+        return Ok(Value::String(Vec::new()));
+    }
+
+    // Find minimum indentation (ignoring empty lines and the first line if it's empty)
+    let min_indent = lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+
+    // Remove the common indentation from each line
+    let dedented: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            if line.len() >= min_indent {
+                line[min_indent..].to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+
+    // Join back with newlines
+    let result = dedented.join("\n");
+
+    Ok(Value::String(result.chars().collect()))
+}
+
+/// Add leading indentation to each line of a multiline string.
+///
+/// Example:
+///   indent("line1\nline2", 4) => "    line1\n    line2"
+pub fn indent(args: &[Value], span: Span) -> NexusResult<Value> {
+    let s = match &args[0] {
+        Value::String(chars) => chars.iter().collect::<String>(),
+        _ => {
+            return Err(NexusError::TypeError {
+                message: "indent expects a rune array as first argument".to_string(),
+                span,
+            });
+        }
+    };
+
+    let spaces = match &args[1] {
+        Value::I64(n) => *n as usize,
+        Value::I32(n) => *n as usize,
+        _ => {
+            return Err(NexusError::TypeError {
+                message: "indent expects an integer as second argument".to_string(),
+                span,
+            });
+        }
+    };
+
+    let prefix = " ".repeat(spaces);
+    let lines: Vec<&str> = s.lines().collect();
+
+    let indented: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                line.to_string()
+            } else {
+                format!("{}{}", prefix, line)
+            }
+        })
+        .collect();
+
+    let result = indented.join("\n");
+    Ok(Value::String(result.chars().collect()))
 }
 
 /// Compare two rune arrays for equality
