@@ -23,8 +23,7 @@ use nexus_permissions::{
     PlatPermission,
 };
 use nexus_types::{InterfaceDef, NexusType, StructDef, TypeRegistry};
-use std::collections::HashMap;
-use std::collections::HashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Configuration for the interpreter
 #[derive(Debug, Clone)]
@@ -56,35 +55,35 @@ pub struct Interpreter {
     /// Type registry
     type_registry: TypeRegistry,
     /// Function definitions
-    functions: HashMap<String, FunctionDef>,
+    functions: FxHashMap<String, FunctionDef>,
     /// Method definitions (keyed by "TypeName.methodName")
-    methods: HashMap<String, MethodDef>,
+    methods: FxHashMap<String, MethodDef>,
     /// Macro definitions
-    macros: HashMap<String, nexus_parser::MacroDef>,
+    macros: FxHashMap<String, nexus_parser::MacroDef>,
     /// Struct AST definitions (for default value evaluation)
-    struct_defs: HashMap<String, StructDefAst>,
+    struct_defs: FxHashMap<String, StructDefAst>,
     /// Permission manager
     permissions: PermissionManager,
     /// Builtin functions
     builtins: BuiltinRegistry,
     /// Imported symbols mapped to their source module (e.g., "println" -> "compat.io")
-    imported_symbols: HashMap<String, String>,
+    imported_symbols: FxHashMap<String, String>,
     /// Imported modules for qualified access (e.g., "use mymodule" allows "mymodule.func()")
-    imported_modules: HashSet<String>,
+    imported_modules: FxHashSet<String>,
     /// Per-module imported symbols (module_name -> (symbol_name -> source_module))
-    module_imported_symbols: HashMap<String, HashMap<String, String>>,
+    module_imported_symbols: FxHashMap<String, FxHashMap<String, String>>,
     /// Macro source modules (qualified_macro_name -> defining_module)
-    macro_source_modules: HashMap<String, String>,
+    macro_source_modules: FxHashMap<String, String>,
     /// Pending use statements to be processed after macro expansion (module_name -> use_statements)
-    pending_use_statements: HashMap<String, Vec<nexus_parser::UseStatement>>,
+    pending_use_statements: FxHashMap<String, Vec<nexus_parser::UseStatement>>,
     /// Known module names (from dependencies)
-    known_modules: HashSet<String>,
+    known_modules: FxHashSet<String>,
     /// Functions defined in each module (module_name -> function_names)
-    module_functions: HashMap<String, HashSet<String>>,
+    module_functions: FxHashMap<String, FxHashSet<String>>,
     /// Macros defined in each module (module_name -> macro_names)
-    module_macros: HashMap<String, HashSet<String>>,
+    module_macros: FxHashMap<String, FxHashSet<String>>,
     /// Structs defined in each module (module_name -> struct_names)
-    module_structs: HashMap<String, HashSet<String>>,
+    module_structs: FxHashMap<String, FxHashSet<String>>,
     /// Current recursion depth
     recursion_depth: usize,
     /// Step counter for sandboxing
@@ -115,21 +114,21 @@ impl Interpreter {
             config,
             global_scope: Scope::new_global(),
             type_registry: TypeRegistry::new(),
-            functions: HashMap::new(),
-            methods: HashMap::new(),
-            macros: HashMap::new(),
-            struct_defs: HashMap::new(),
+            functions: FxHashMap::default(),
+            methods: FxHashMap::default(),
+            macros: FxHashMap::default(),
+            struct_defs: FxHashMap::default(),
             permissions,
             builtins: BuiltinRegistry::new(),
-            imported_symbols: HashMap::new(),
-            imported_modules: HashSet::new(),
-            module_imported_symbols: HashMap::new(),
-            macro_source_modules: HashMap::new(),
-            pending_use_statements: HashMap::new(),
-            known_modules: HashSet::new(),
-            module_functions: HashMap::new(),
-            module_macros: HashMap::new(),
-            module_structs: HashMap::new(),
+            imported_symbols: FxHashMap::default(),
+            imported_modules: FxHashSet::default(),
+            module_imported_symbols: FxHashMap::default(),
+            macro_source_modules: FxHashMap::default(),
+            pending_use_statements: FxHashMap::default(),
+            known_modules: FxHashSet::default(),
+            module_functions: FxHashMap::default(),
+            module_macros: FxHashMap::default(),
+            module_structs: FxHashMap::default(),
             recursion_depth: 0,
             step_count: 0,
             current_color: FunctionColor::Std,
@@ -975,7 +974,7 @@ impl Interpreter {
         match &assign.target {
             Expression::Variable(var_ref) => {
                 // Check global scope first
-                if self.global_scope.get(&var_ref.name).is_some() {
+                if self.global_scope.has(&var_ref.name) {
                     self.global_scope
                         .assign(&var_ref.name, value, var_ref.span)?;
                 } else {
@@ -1067,15 +1066,15 @@ impl Interpreter {
         // Get the array variable name
         if let Expression::Variable(var_ref) = &*index_expr.array {
             // Get the current array value
-            let var = scope
-                .get(&var_ref.name)
-                .or_else(|| self.global_scope.get(&var_ref.name));
-            let var = var.ok_or_else(|| NexusError::UndefinedVariable {
+            let arr_value = scope
+                .get_value(&var_ref.name)
+                .or_else(|| self.global_scope.get_value(&var_ref.name));
+            let arr_value = arr_value.ok_or_else(|| NexusError::UndefinedVariable {
                 name: var_ref.name.clone(),
                 span: var_ref.span,
             })?;
 
-            if let Value::Array(mut arr) = var.value {
+            if let Value::Array(mut arr) = arr_value {
                 if !index_expr.unchecked
                     && self.config.bounds_checking
                     && (idx < 0 || idx as usize >= arr.len())
@@ -1089,7 +1088,7 @@ impl Interpreter {
                 arr[idx as usize] = value;
 
                 // Assign the modified array back
-                if self.global_scope.get(&var_ref.name).is_some() {
+                if self.global_scope.has(&var_ref.name) {
                     self.global_scope
                         .assign(&var_ref.name, Value::Array(arr), var_ref.span)?;
                 } else {
@@ -1263,15 +1262,15 @@ impl Interpreter {
             Expression::Literal(lit) => self.literal_to_value(lit),
             Expression::Variable(var_ref) => {
                 // Check global scope first, then local
-                if let Some(var) = self.global_scope.get(&var_ref.name) {
-                    Ok(var.value)
+                if let Some(value) = self.global_scope.get_value(&var_ref.name) {
+                    Ok(value)
                 } else {
-                    scope.get(&var_ref.name).map(|v| v.value).ok_or_else(|| {
-                        NexusError::UndefinedVariable {
+                    scope
+                        .get_value(&var_ref.name)
+                        .ok_or_else(|| NexusError::UndefinedVariable {
                             name: var_ref.name.clone(),
                             span: var_ref.span,
-                        }
-                    })
+                        })
                 }
             }
             Expression::Call(call) => self.evaluate_call(call, scope),
@@ -1475,8 +1474,8 @@ impl Interpreter {
 
             // Copy-out: write back mutable parameter values to caller's variables
             for (param_name, caller_var_name) in mutable_args {
-                if let Some(var) = final_scope.get(&param_name) {
-                    scope.assign(&caller_var_name, var.value.clone(), call.span)?;
+                if let Some(value) = final_scope.get_value(&param_name) {
+                    scope.assign(&caller_var_name, value, call.span)?;
                 }
             }
 
@@ -2008,10 +2007,10 @@ impl Interpreter {
     /// Evaluate lambda expression
     fn evaluate_lambda(&mut self, lambda: &LambdaExpr, scope: &mut Scope) -> NexusResult<Value> {
         // Capture variables from current scope
-        let mut captured = HashMap::new();
+        let mut captured = FxHashMap::default();
         for capture_name in &lambda.captures {
-            if let Some(var) = scope.get(capture_name) {
-                captured.insert(capture_name.clone(), var.value.clone());
+            if let Some(value) = scope.get_value(capture_name) {
+                captured.insert(capture_name.clone(), value);
             }
         }
 
@@ -2124,7 +2123,7 @@ enum ControlFlow {
 pub struct LambdaValue {
     pub params: Vec<nexus_parser::Parameter>,
     pub body: LambdaBody,
-    pub captured: HashMap<String, Value>,
+    pub captured: FxHashMap<String, Value>,
 }
 
 #[cfg(test)]

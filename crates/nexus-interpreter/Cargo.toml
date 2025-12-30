@@ -14,5 +14,6 @@ nexus-parser = { workspace = true }
 nexus-types = { workspace = true }
 nexus-permissions = { workspace = true }
 thiserror = { workspace = true }
+rustc-hash = "2"
 serde = { workspace = true, optional = true }
 json5 = { workspace = true, optional = true }

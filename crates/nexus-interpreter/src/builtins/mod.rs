@@ -37,10 +37,12 @@ mod utility;
 
 use crate::Value;
 use nexus_core::{FunctionColor, NexusResult, Span};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 #[cfg(feature = "builtin-docs")]
 use serde::Deserialize;
+#[cfg(feature = "builtin-docs")]
+use std::collections::HashMap;
 #[cfg(feature = "builtin-docs")]
 use std::sync::LazyLock;
 
@@ -100,15 +102,15 @@ pub struct Builtin {
 /// Registry of builtin functions
 pub struct BuiltinRegistry {
     /// Core builtins that are always available
-    builtins: HashMap<String, Builtin>,
+    builtins: FxHashMap<String, Builtin>,
     /// Builtins from compat.io module that require import
-    compat_io_builtins: HashMap<String, Builtin>,
+    compat_io_builtins: FxHashMap<String, Builtin>,
     /// Builtins from compat.fs module that require import
-    compat_fs_builtins: HashMap<String, Builtin>,
+    compat_fs_builtins: FxHashMap<String, Builtin>,
     /// Builtins from compat.proc module that require import
-    compat_proc_builtins: HashMap<String, Builtin>,
+    compat_proc_builtins: FxHashMap<String, Builtin>,
     /// Builtins from plat.console module that require import
-    plat_console_builtins: HashMap<String, Builtin>,
+    plat_console_builtins: FxHashMap<String, Builtin>,
 }
 
 /// Macro to register a builtin function with less boilerplate
@@ -160,11 +162,11 @@ impl BuiltinRegistry {
     /// Create a new registry with all builtin functions
     pub fn new() -> Self {
         let mut registry = Self {
-            builtins: HashMap::new(),
-            compat_io_builtins: HashMap::new(),
-            compat_fs_builtins: HashMap::new(),
-            compat_proc_builtins: HashMap::new(),
-            plat_console_builtins: HashMap::new(),
+            builtins: FxHashMap::default(),
+            compat_io_builtins: FxHashMap::default(),
+            compat_fs_builtins: FxHashMap::default(),
+            compat_proc_builtins: FxHashMap::default(),
+            plat_console_builtins: FxHashMap::default(),
         };
         registry.register_all();
         registry

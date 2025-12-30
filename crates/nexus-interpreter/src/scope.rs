@@ -8,8 +8,8 @@
 
 use crate::Value;
 use nexus_core::{NexusError, NexusResult, Span, VarModifiers};
+use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
@@ -62,7 +62,7 @@ impl Variable {
 #[derive(Debug)]
 struct ScopeInner {
     /// Variables in this scope
-    variables: HashMap<String, Variable>,
+    variables: FxHashMap<String, Variable>,
     /// Parent scope (for nested scopes) - uses Rc for shared mutable access
     parent: Option<Rc<RefCell<ScopeInner>>>,
     /// Whether this is the global scope
@@ -85,7 +85,7 @@ impl Scope {
     pub fn new() -> Self {
         Self {
             inner: Rc::new(RefCell::new(ScopeInner {
-                variables: HashMap::new(),
+                variables: FxHashMap::default(),
                 parent: None,
                 is_global: false,
                 label: None,
@@ -97,7 +97,7 @@ impl Scope {
     pub fn new_global() -> Self {
         Self {
             inner: Rc::new(RefCell::new(ScopeInner {
-                variables: HashMap::new(),
+                variables: FxHashMap::default(),
                 parent: None,
                 is_global: true,
                 label: None,
@@ -112,7 +112,7 @@ impl Scope {
     pub fn child(&self) -> Self {
         Self {
             inner: Rc::new(RefCell::new(ScopeInner {
-                variables: HashMap::new(),
+                variables: FxHashMap::default(),
                 parent: Some(Rc::clone(&self.inner)),
                 is_global: false,
                 label: None,
@@ -171,6 +171,21 @@ impl Scope {
         }
     }
 
+    /// Look up only the value of a variable by name (more efficient than get())
+    /// Use this when only need the value is needed, not the full Variable metadata
+    pub fn get_value(&self, name: &str) -> Option<Value> {
+        let inner = self.inner.borrow();
+        if let Some(var) = inner.variables.get(name) {
+            Some(var.value.clone())
+        } else if let Some(parent) = &inner.parent {
+            let parent_rc = Rc::clone(parent);
+            drop(inner);
+            Self::get_value_from_inner(&parent_rc, name)
+        } else {
+            None
+        }
+    }
+
     /// Helper to get a variable from a ScopeInner Rc
     fn get_from_inner(inner_rc: &Rc<RefCell<ScopeInner>>, name: &str) -> Option<Variable> {
         let inner = inner_rc.borrow();
@@ -180,6 +195,20 @@ impl Scope {
             let parent_rc = Rc::clone(parent);
             drop(inner);
             Self::get_from_inner(&parent_rc, name)
+        } else {
+            None
+        }
+    }
+
+    /// Helper to get only the value from a ScopeInner Rc
+    fn get_value_from_inner(inner_rc: &Rc<RefCell<ScopeInner>>, name: &str) -> Option<Value> {
+        let inner = inner_rc.borrow();
+        if let Some(var) = inner.variables.get(name) {
+            Some(var.value.clone())
+        } else if let Some(parent) = &inner.parent {
+            let parent_rc = Rc::clone(parent);
+            drop(inner);
+            Self::get_value_from_inner(&parent_rc, name)
         } else {
             None
         }
@@ -198,8 +227,7 @@ impl Scope {
         span: Span,
     ) -> NexusResult<()> {
         let mut inner = inner_rc.borrow_mut();
-        if inner.variables.contains_key(name) {
-            let var = inner.variables.get_mut(name).unwrap();
+        if let Some(var) = inner.variables.get_mut(name) {
             if !var.is_mutable() {
                 return Err(NexusError::ImmutableVariable {
                     name: name.to_string(),
@@ -227,7 +255,30 @@ impl Scope {
 
     /// Check if a variable exists in this scope or any parent
     pub fn has(&self, name: &str) -> bool {
-        self.get(name).is_some()
+        let inner = self.inner.borrow();
+        if inner.variables.contains_key(name) {
+            true
+        } else if let Some(parent) = &inner.parent {
+            let parent_rc = Rc::clone(parent);
+            drop(inner);
+            Self::has_in_inner(&parent_rc, name)
+        } else {
+            false
+        }
+    }
+
+    /// Helper to check if a variable exists in a ScopeInner Rc chain
+    fn has_in_inner(inner_rc: &Rc<RefCell<ScopeInner>>, name: &str) -> bool {
+        let inner = inner_rc.borrow();
+        if inner.variables.contains_key(name) {
+            true
+        } else if let Some(parent) = &inner.parent {
+            let parent_rc = Rc::clone(parent);
+            drop(inner);
+            Self::has_in_inner(&parent_rc, name)
+        } else {
+            false
+        }
     }
 
     /// Get all variable names in this scope (not parents)
