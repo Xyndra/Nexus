@@ -9,3 +9,4 @@ nexus-transpiler-c = { path = "../nexus-transpiler-c" }
 nexus-core = { path = "../nexus-core" }
 
 [dev-dependencies]
+rayon = "1.10"

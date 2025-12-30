@@ -13,9 +13,13 @@
 //! Also tests C transpiler by transpiling, compiling, and comparing output.
 
 use nexus_transpiler_c::{CTranspiler, TranspilerConfig};
+use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Get the path to the samples directory
 fn samples_dir() -> PathBuf {
@@ -40,11 +44,37 @@ fn normalize_output(s: &str) -> String {
     s.replace("\r\n", "\n").trim_end().to_string()
 }
 
+/// Timing information for a test run
+#[derive(Default, Clone)]
+struct TimingInfo {
+    interpreter_time: Duration,
+    transpiler_time: Duration,
+    compiler_time: Duration,
+    c_run_time: Duration,
+}
+
+impl TimingInfo {
+    fn total(&self) -> Duration {
+        self.interpreter_time + self.transpiler_time + self.compiler_time + self.c_run_time
+    }
+}
+
+fn format_duration(d: Duration) -> String {
+    let millis = d.as_millis();
+    if millis < 1000 {
+        format!("{}ms", millis)
+    } else {
+        format!("{:.2}s", d.as_secs_f64())
+    }
+}
+
 /// Run a sample program with optional input file path (passed as argument, not stdin)
 fn run_sample_with_input(
     sample_dir: &PathBuf,
     input_path: Option<&PathBuf>,
-) -> Result<String, String> {
+) -> Result<(String, Duration), String> {
+    let start = Instant::now();
+
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace_root())
         .args(["run", "-q", "-p", "nexus-cli", "--", "run"])
@@ -61,8 +91,10 @@ fn run_sample_with_input(
         .output()
         .map_err(|e| format!("Failed to run cargo: {}", e))?;
 
+    let elapsed = start.elapsed();
+
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        Ok((String::from_utf8_lossy(&output.stdout).to_string(), elapsed))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -74,7 +106,9 @@ fn run_sample_with_input(
 }
 
 /// Run `nexus test` on a sample directory
-fn run_nexus_test(sample_dir: &PathBuf) -> Result<String, String> {
+fn run_nexus_test(sample_dir: &PathBuf) -> Result<(String, Duration), String> {
+    let start = Instant::now();
+
     let output = Command::new("cargo")
         .current_dir(workspace_root())
         .args(["run", "-q", "-p", "nexus-cli", "--", "test"])
@@ -84,11 +118,12 @@ fn run_nexus_test(sample_dir: &PathBuf) -> Result<String, String> {
         .output()
         .map_err(|e| format!("Failed to run nexus test: {}", e))?;
 
+    let elapsed = start.elapsed();
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if output.status.success() {
-        Ok(stdout)
+        Ok((stdout, elapsed))
     } else {
         Err(format!(
             "nexus test failed:\nstderr: {}\nstdout: {}",
@@ -203,7 +238,11 @@ fn discover_samples() -> Vec<Sample> {
 }
 
 /// Run a single test case for a sample
-fn run_single_test_case(sample: &Sample, test_case: &TestCase) -> Result<(), String> {
+fn run_single_test_case(
+    sample: &Sample,
+    test_case: &TestCase,
+    timing: &mut TimingInfo,
+) -> Result<(), String> {
     let expected = fs::read_to_string(&test_case.expected_path).map_err(|e| {
         format!(
             "{}::{}: Failed to read expected output: {}",
@@ -211,8 +250,11 @@ fn run_single_test_case(sample: &Sample, test_case: &TestCase) -> Result<(), Str
         )
     })?;
 
-    let actual = run_sample_with_input(&sample.dir, test_case.input_path.as_ref())
-        .map_err(|e| format!("{}::{}: {}", sample.name, test_case.name, e))?;
+    let (actual, interpreter_time) =
+        run_sample_with_input(&sample.dir, test_case.input_path.as_ref())
+            .map_err(|e| format!("{}::{}: {}", sample.name, test_case.name, e))?;
+
+    timing.interpreter_time += interpreter_time;
 
     let actual_normalized = normalize_output(&actual);
     let expected_normalized = normalize_output(&expected);
@@ -236,22 +278,24 @@ fn run_single_test_case(sample: &Sample, test_case: &TestCase) -> Result<(), Str
     }
 
     // Test C transpiler for all test cases
-    test_c_transpiler(sample, test_case, &actual_normalized)?;
+    test_c_transpiler(sample, test_case, &actual_normalized, timing)?;
 
     Ok(())
 }
 
 /// Run a single sample: compare output and run test functions
-fn run_single_sample(sample: &Sample) -> Result<(), String> {
+fn run_single_sample(sample: &Sample) -> Result<TimingInfo, String> {
+    let mut timing = TimingInfo::default();
+
     // Run all test cases
     for test_case in &sample.test_cases {
-        run_single_test_case(sample, test_case)?;
+        run_single_test_case(sample, test_case, &mut timing)?;
     }
 
     // Run nexus test to execute any test_* functions (only for simple samples)
     if sample.test_cases.len() == 1 && sample.test_cases[0].input_path.is_none() {
         match run_nexus_test(&sample.dir) {
-            Ok(output) => {
+            Ok((output, _test_time)) => {
                 // Check if any tests failed (look for failure indicators)
                 if output.contains("failed") && output.contains("✗") {
                     return Err(format!(
@@ -269,7 +313,7 @@ fn run_single_sample(sample: &Sample) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    Ok(timing)
 }
 
 /// Test C transpiler for a sample
@@ -277,6 +321,7 @@ fn test_c_transpiler(
     sample: &Sample,
     test_case: &TestCase,
     interpreter_output: &str,
+    timing: &mut TimingInfo,
 ) -> Result<(), String> {
     let input_path = test_case.input_path.as_ref();
     // Create temp directory
@@ -290,6 +335,7 @@ fn test_c_transpiler(
     })?;
 
     // Transpile
+    let transpile_start = Instant::now();
     let config = TranspilerConfig {
         output_dir: temp_dir.clone(),
         ..Default::default()
@@ -301,6 +347,7 @@ fn test_c_transpiler(
             sample.name, test_case.name, e
         )
     })?;
+    timing.transpiler_time += transpile_start.elapsed();
 
     // Write files
     for (path, content) in &result.files {
@@ -329,13 +376,16 @@ fn test_c_transpiler(
     })?;
 
     // Try to compile and run
-    if let Some(c_output) = try_compile_and_run(
+    if let Some((c_output, compile_time, run_time)) = try_compile_and_run(
         &temp_dir,
         &result,
         &sample.name,
         &test_case.name,
         input_path,
     )? {
+        timing.compiler_time += compile_time;
+        timing.c_run_time += run_time;
+
         let c_normalized = normalize_output(&c_output);
         let interpreter_normalized = normalize_output(interpreter_output);
 
@@ -361,14 +411,14 @@ fn test_c_transpiler(
     Ok(())
 }
 
-/// Try to compile and run C code, return output if successful
+/// Try to compile and run C code, return output and timings if successful
 fn try_compile_and_run(
     temp_dir: &Path,
     result: &nexus_transpiler_c::TranspileResult,
     sample_name: &str,
     test_case_name: &str,
     input_path: Option<&PathBuf>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<(String, Duration, Duration)>, String> {
     let mut c_files: Vec<PathBuf> = result.files.keys().cloned().collect();
     c_files.push(temp_dir.join("nexus_core.c"));
 
@@ -390,6 +440,8 @@ fn try_compile_and_run(
         {
             continue;
         }
+
+        let compile_start = Instant::now();
 
         let mut cmd = Command::new(compiler);
         cmd.current_dir(temp_dir);
@@ -415,6 +467,8 @@ fn try_compile_and_run(
                 )
             })?;
 
+        let compile_time = compile_start.elapsed();
+
         if !compile_output.status.success() {
             let stderr = String::from_utf8_lossy(&compile_output.stderr);
             return Err(format!(
@@ -422,6 +476,8 @@ fn try_compile_and_run(
                 sample_name, test_case_name, compiler, stderr
             ));
         }
+
+        let run_start = Instant::now();
 
         let mut run_cmd = Command::new(&exe_path);
         run_cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -438,6 +494,8 @@ fn try_compile_and_run(
             )
         })?;
 
+        let run_time = run_start.elapsed();
+
         if !run_output.status.success() {
             let stderr = String::from_utf8_lossy(&run_output.stderr);
             return Err(format!(
@@ -446,9 +504,11 @@ fn try_compile_and_run(
             ));
         }
 
-        return Ok(Some(
+        return Ok(Some((
             String::from_utf8_lossy(&run_output.stdout).to_string(),
-        ));
+            compile_time,
+            run_time,
+        )));
     }
 
     // No compiler available - skip C test
@@ -464,32 +524,53 @@ fn test_all_samples() {
         return;
     }
 
-    let mut passed = 0;
-    let mut failed = 0;
-    let mut failures = Vec::new();
+    let passed = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(0);
+    let failures: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-    for sample in &samples {
+    samples.par_iter().for_each(|sample| {
+        let test_count = sample.test_cases.len();
+
         match run_single_sample(sample) {
-            Ok(()) => {
-                let test_count = sample.test_cases.len();
-                passed += test_count;
+            Ok(timing) => {
+                passed.fetch_add(test_count, Ordering::Relaxed);
+
+                let timing_str = format!(
+                    "[total: {}, interp: {}, transpile: {}, compile: {}, c_run: {}]",
+                    format_duration(timing.total()),
+                    format_duration(timing.interpreter_time),
+                    format_duration(timing.transpiler_time),
+                    format_duration(timing.compiler_time),
+                    format_duration(timing.c_run_time),
+                );
+
                 if test_count == 1 {
-                    println!("✓ {}", sample.name);
+                    println!("✓ {} {}", sample.name, timing_str);
                 } else {
-                    println!("✓ {} ({} test cases)", sample.name, test_count);
+                    println!(
+                        "✓ {} ({} test cases) {}",
+                        sample.name, test_count, timing_str
+                    );
                 }
             }
             Err(e) => {
-                failed += 1;
-                failures.push(e);
+                failed.fetch_add(1, Ordering::Relaxed);
+                failures.lock().unwrap().push(e);
                 println!("✗ {}", sample.name);
             }
         }
-    }
+    });
+
+    let passed_count = passed.load(Ordering::Relaxed);
+    let failed_count = failed.load(Ordering::Relaxed);
+    let failures = failures.into_inner().unwrap();
 
     println!();
     println!("═══════════════════════════════════════");
-    println!("Sample Tests: {} passed, {} failed", passed, failed);
+    println!(
+        "Sample Tests: {} passed, {} failed",
+        passed_count, failed_count
+    );
     println!("═══════════════════════════════════════");
 
     if !failures.is_empty() {
@@ -499,6 +580,6 @@ fn test_all_samples() {
             println!();
             println!("{}", failure);
         }
-        panic!("{} sample test(s) failed", failed);
+        panic!("{} sample test(s) failed", failed_count);
     }
 }
