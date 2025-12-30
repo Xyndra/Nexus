@@ -140,21 +140,22 @@ fn find_macro_in_all_documents(
         if let Some(ast) = ast_opt {
             for item in &ast.items {
                 if let Item::Macro(macro_def) = item
-                    && macro_def.name == name {
-                        // The macro name starts after the $ sign
-                        let name_start = macro_def.span.start + 1;
-                        let name_end = name_start + macro_def.name.len();
-                        let name_span = nexus_core::Span {
-                            start: name_start,
-                            end: name_end,
-                            line: macro_def.span.line,
-                            column: macro_def.span.column + 1,
-                        };
-                        return Some(Location {
-                            uri: doc_uri.clone(),
-                            range: span_to_range(content, &name_span),
-                        });
-                    }
+                    && macro_def.name == name
+                {
+                    // The macro name starts after the $ sign
+                    let name_start = macro_def.span.start + 1;
+                    let name_end = name_start + macro_def.name.len();
+                    let name_span = nexus_core::Span {
+                        start: name_start,
+                        end: name_end,
+                        line: macro_def.span.line,
+                        column: macro_def.span.column + 1,
+                    };
+                    return Some(Location {
+                        uri: doc_uri.clone(),
+                        range: span_to_range(content, &name_span),
+                    });
+                }
             }
         }
     }
@@ -193,9 +194,9 @@ fn find_variable_in_function(
                 if let Some(else_clause) = &if_stmt.else_block
                     && let Some(loc) =
                         find_variable_in_else_clause(uri, content, var_name, else_clause)
-                    {
-                        return Some(loc);
-                    }
+                {
+                    return Some(loc);
+                }
             }
             Statement::Subscope(subscope) => {
                 if let Some(loc) =
@@ -357,6 +358,7 @@ fn find_definition_in_statement(
             None
         }
         Statement::Goto(_) => None,
+        Statement::Exit(_) => None,
         Statement::Block(block) => {
             for inner_stmt in &block.statements {
                 if let Some(loc) = find_definition_in_statement(
@@ -670,20 +672,21 @@ fn find_definition_in_expression(
                 // Try to find macro definition in current document
                 for item in &ast.items {
                     if let Item::Macro(macro_def) = item
-                        && macro_def.name == macro_call.name {
-                            let def_name_start = macro_def.span.start + 1;
-                            let def_name_end = def_name_start + macro_def.name.len();
-                            let name_span = nexus_core::Span {
-                                start: def_name_start,
-                                end: def_name_end,
-                                line: macro_def.span.line,
-                                column: macro_def.span.column + 1,
-                            };
-                            return Some(Location {
-                                uri: uri.to_string(),
-                                range: span_to_range(content, &name_span),
-                            });
-                        }
+                        && macro_def.name == macro_call.name
+                    {
+                        let def_name_start = macro_def.span.start + 1;
+                        let def_name_end = def_name_start + macro_def.name.len();
+                        let name_span = nexus_core::Span {
+                            start: def_name_start,
+                            end: def_name_end,
+                            line: macro_def.span.line,
+                            column: macro_def.span.column + 1,
+                        };
+                        return Some(Location {
+                            uri: uri.to_string(),
+                            range: span_to_range(content, &name_span),
+                        });
+                    }
                 }
                 // Try to find in all documents
                 if let Some(loc) = find_macro_in_all_documents(&macro_call.name, documents) {

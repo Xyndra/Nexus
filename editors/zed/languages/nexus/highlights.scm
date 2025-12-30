@@ -12,6 +12,7 @@
   "defer"
   "subscope"
   "goto"
+  "exit"
   "unknown"
   "macro"
 ] @keyword
@@ -108,7 +109,10 @@
 (subscope_statement name: (identifier) @label)
 
 ; Goto labels
-(goto_statement (identifier) @label)
+(goto_statement label: (identifier) @label)
+
+; Exit labels
+(exit_statement label: (identifier) @label)
 
 ; Imports
 (use_symbol_list (identifier) @function)

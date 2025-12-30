@@ -41,7 +41,7 @@ std pow(i64 base, i64 exp): i64 {
     m i = 0
     subscope loop {
         if (gei64(i, exp)) {
-            return
+            exit loop
         }
         result = muli64(result, base)
         i = addi64(i, 1)
@@ -56,7 +56,7 @@ std gcd(i64 a, i64 b): i64 {
     m y = b
     subscope loop {
         if (eqi64(y, 0)) {
-            return
+            exit loop
         }
         c temp = y
         y = modi64(x, y)

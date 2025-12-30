@@ -492,6 +492,7 @@ impl<'src> Lexer<'src> {
             "defer" => TokenKind::Defer,
             "subscope" => TokenKind::Subscope,
             "goto" => TokenKind::Goto,
+            "exit" => TokenKind::Exit,
 
             // Primitive types
             "void" => TokenKind::Void,

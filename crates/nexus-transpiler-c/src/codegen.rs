@@ -89,10 +89,6 @@ impl<'a> CCodeGenerator<'a> {
         }
     }
 
-    fn in_subscope(&self) -> bool {
-        self.subscope_depth > 0
-    }
-
     fn enter_subscope(&mut self) {
         self.subscope_depth += 1;
     }
@@ -670,6 +666,11 @@ int main(int argc, char** argv) {{
                 let label = self.sanitize_label(&goto.label);
                 Ok(self.indent(&format!("goto {};\n", label)))
             }
+            Statement::Exit(exit) => {
+                // Exit a subscope - jump to the end label of the target subscope
+                let label = self.sanitize_label(&exit.label);
+                Ok(self.indent(&format!("goto {}_end;\n", label)))
+            }
             Statement::Block(block) => {
                 let mut code = self.indent("{\n");
                 code.push_str(&self.generate_block(block)?);
@@ -882,14 +883,6 @@ int main(int argc, char** argv) {{
 
     /// Generate return statement
     fn generate_return(&mut self, ret: &ReturnStmt) -> NexusResult<String> {
-        // If we're in a subscope, return acts as break
-        if self.in_subscope() {
-            // In subscope, bare return means break out
-            if ret.value.is_none() {
-                return Ok(self.indent("break;\n"));
-            }
-        }
-
         let mut code = String::new();
 
         if let Some(ref value) = ret.value {
@@ -969,9 +962,9 @@ int main(int argc, char** argv) {{
     fn generate_subscope(&mut self, subscope: &SubscopeStmt) -> NexusResult<String> {
         let mut code = String::new();
 
-        // Subscopes in Nexus are loops that can be exited with return (becomes break)
-        // and jumped to with goto (becomes continue to loop start)
-        // We use a do-while(0) loop that can be repeated with a flag
+        // Subscopes in Nexus are loops that can be exited with exit (goto end label)
+        // and jumped to with goto (goto start label to restart loop)
+        // We use a do-while(0) loop with start and end labels
 
         // Sanitize label name (replace reserved C keywords)
         let label = self.sanitize_label(&subscope.name);
@@ -987,6 +980,8 @@ int main(int argc, char** argv) {{
         self.exit_subscope();
 
         code.push_str(&self.indent("} while (0);\n"));
+        // End label for exit statements to jump to
+        code.push_str(&self.indent(&format!("{}_end:;\n", label)));
 
         Ok(code)
     }

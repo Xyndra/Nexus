@@ -384,6 +384,8 @@ pub enum Statement {
     Subscope(SubscopeStmt),
     /// Goto statement
     Goto(GotoStmt),
+    /// Exit statement (exit a subscope)
+    Exit(ExitStmt),
     /// Block statement
     Block(Block),
 }
@@ -399,6 +401,7 @@ impl Statement {
             Statement::Defer(d) => &d.span,
             Statement::Subscope(s) => &s.span,
             Statement::Goto(g) => &g.span,
+            Statement::Exit(e) => &e.span,
             Statement::Block(b) => &b.span,
         }
     }
@@ -528,6 +531,15 @@ pub struct SubscopeStmt {
 #[derive(Debug, Clone)]
 pub struct GotoStmt {
     /// Label to jump to
+    pub label: String,
+    /// Source span
+    pub span: Span,
+}
+
+/// Exit statement (exit a subscope)
+#[derive(Debug, Clone)]
+pub struct ExitStmt {
+    /// Label of the subscope to exit
     pub label: String,
     /// Source span
     pub span: Span,

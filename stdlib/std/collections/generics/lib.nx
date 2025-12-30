@@ -61,10 +61,10 @@ $define_map([dyn]rune key_name, [dyn]rune key_type, [dyn]rune key_eq, [dyn]rune 
     c n = len(m_map.keys)
     m found = false
     subscope find_key {
-        if (gei64(idx, n)) { return }
+        if (gei64(idx, n)) { exit find_key }
         if (${key_eq}(m_map.keys[idx], key)) {
             found = true
-            return
+            exit find_key
         }
         idx = addi64(idx, 1)
         goto find_key
@@ -80,10 +80,10 @@ $define_map([dyn]rune key_name, [dyn]rune key_type, [dyn]rune key_eq, [dyn]rune 
     c n = len(m_map.keys)
     m found_idx: i64 = negi64(1)
     subscope find_key {
-        if (gei64(idx, n)) { return }
+        if (gei64(idx, n)) { exit find_key }
         if (${key_eq}(m_map.keys[idx], key)) {
             found_idx = idx
-            return
+            exit find_key
         }
         idx = addi64(idx, 1)
         goto find_key
@@ -102,10 +102,10 @@ $define_map([dyn]rune key_name, [dyn]rune key_type, [dyn]rune key_eq, [dyn]rune 
     c n = len(m_map.keys)
     m found_idx: i64 = negi64(1)
     subscope find_key {
-        if (gei64(idx, n)) { return }
+        if (gei64(idx, n)) { exit find_key }
         if (${key_eq}(m_map.keys[idx], key)) {
             found_idx = idx
-            return
+            exit find_key
         }
         idx = addi64(idx, 1)
         goto find_key
@@ -154,10 +154,10 @@ $define_map([dyn]rune key_name, [dyn]rune key_type, [dyn]rune key_eq, [dyn]rune 
     c n = len(m_map.keys)
     m found_idx: i64 = negi64(1)
     subscope find_key {
-        if (gei64(idx, n)) { return }
+        if (gei64(idx, n)) { exit find_key }
         if (${key_eq}(m_map.keys[idx], key)) {
             found_idx = idx
-            return
+            exit find_key
         }
         idx = addi64(idx, 1)
         goto find_key
@@ -167,7 +167,7 @@ $define_map([dyn]rune key_name, [dyn]rune key_type, [dyn]rune key_eq, [dyn]rune 
     m new_values = []
     m i: i64 = 0
     subscope rebuild {
-        if (gei64(i, n)) { return }
+        if (gei64(i, n)) { exit rebuild }
         if (not(eqi64(i, found_idx))) {
             new_keys = push(new_keys, m_map.keys[i])
             new_values = push(new_values, m_map.values[i])
@@ -217,10 +217,10 @@ $define_set([dyn]rune type_name, [dyn]rune type_def, [dyn]rune type_eq): macro {
     c n = len(s.items)
     m found = false
     subscope find_value {
-        if (gei64(idx, n)) { return }
+        if (gei64(idx, n)) { exit find_value }
         if (${type_eq}(s.items[idx], value)) {
             found = true
-            return
+            exit find_value
         }
         idx = addi64(idx, 1)
         goto find_value
@@ -239,10 +239,10 @@ $define_set([dyn]rune type_name, [dyn]rune type_def, [dyn]rune type_eq): macro {
     c n = len(s.items)
     m found = false
     subscope find_value {
-        if (gei64(idx, n)) { return }
+        if (gei64(idx, n)) { exit find_value }
         if (${type_eq}(s.items[idx], value)) {
             found = true
-            return
+            exit find_value
         }
         idx = addi64(idx, 1)
         goto find_value
@@ -258,10 +258,10 @@ $define_set([dyn]rune type_name, [dyn]rune type_def, [dyn]rune type_eq): macro {
     c n = len(s.items)
     m found_idx: i64 = negi64(1)
     subscope find_value {
-        if (gei64(idx, n)) { return }
+        if (gei64(idx, n)) { exit find_value }
         if (${type_eq}(s.items[idx], value)) {
             found_idx = idx
-            return
+            exit find_value
         }
         idx = addi64(idx, 1)
         goto find_value
@@ -270,7 +270,7 @@ $define_set([dyn]rune type_name, [dyn]rune type_def, [dyn]rune type_eq): macro {
     m new_items = []
     m i: i64 = 0
     subscope rebuild {
-        if (gei64(i, n)) { return }
+        if (gei64(i, n)) { exit rebuild }
         if (not(eqi64(i, found_idx))) {
             new_items = push(new_items, s.items[i])
         }

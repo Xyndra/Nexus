@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use nexus_core::{Diagnostics, FunctionColor};
 use nexus_parser::{
-    Block, CallExpr, ElseClause, Expression, GotoStmt, Item, LiteralKind, Program, Statement,
-    SubscopeStmt, parse,
+    Block, CallExpr, ElseClause, ExitStmt, Expression, GotoStmt, Item, LiteralKind, Program,
+    Statement, SubscopeStmt, parse,
 };
 
 use crate::builtins;
@@ -404,9 +404,7 @@ pub fn compute_diagnostics_with_context(
         for item in &program.items {
             match item {
                 Item::Function(func) => {
-                    // Check for return statements with values inside subscopes
-                    check_returns_in_block(&func.body, 0, &mut diagnostics);
-                    // Check for duplicate subscope labels and goto validity
+                    // Check for duplicate subscope labels and goto/exit validity
                     check_subscope_labels_in_block(&func.body, &mut diagnostics);
                     // Check for variable redefinitions within the function
                     check_variable_redefinitions_in_block(&func.body, &mut diagnostics);
@@ -437,9 +435,7 @@ pub fn compute_diagnostics_with_context(
                     );
                 }
                 Item::Method(method) => {
-                    // Check for return statements with values inside subscopes
-                    check_returns_in_block(&method.body, 0, &mut diagnostics);
-                    // Check for duplicate subscope labels and goto validity
+                    // Check for duplicate subscope labels and goto/exit validity
                     check_subscope_labels_in_block(&method.body, &mut diagnostics);
                     // Check for variable redefinitions within the method
                     check_variable_redefinitions_in_block(&method.body, &mut diagnostics);
@@ -781,6 +777,7 @@ fn check_function_imports_in_statement(
             );
         }
         Statement::Goto(_) => {}
+        Statement::Exit(_) => {}
     }
 }
 
@@ -1319,6 +1316,7 @@ fn check_macro_imports_in_statement(
             );
         }
         Statement::Goto(_) => {}
+        Statement::Exit(_) => {}
     }
 }
 
@@ -1745,64 +1743,7 @@ fn check_variable_redefinitions_in_else_clause(
     }
 }
 
-/// Check for return statements with values inside subscopes.
-fn check_returns_in_block(block: &Block, subscope_depth: usize, diagnostics: &mut Diagnostics) {
-    for stmt in &block.statements {
-        check_returns_in_statement(stmt, subscope_depth, diagnostics);
-    }
-}
-
-/// Check a statement for invalid returns inside subscopes.
-fn check_returns_in_statement(
-    stmt: &Statement,
-    subscope_depth: usize,
-    diagnostics: &mut Diagnostics,
-) {
-    match stmt {
-        Statement::Return(ret) => {
-            if subscope_depth > 0 && ret.value.is_some() {
-                diagnostics.error("Return inside a subscope cannot have a value", ret.span);
-            }
-        }
-        Statement::If(if_stmt) => {
-            check_returns_in_block(&if_stmt.then_block, subscope_depth, diagnostics);
-            if let Some(else_clause) = &if_stmt.else_block {
-                check_returns_in_else_clause(else_clause, subscope_depth, diagnostics);
-            }
-        }
-        Statement::Subscope(subscope) => {
-            check_returns_in_block(&subscope.body, subscope_depth + 1, diagnostics);
-        }
-        Statement::Block(block) => {
-            check_returns_in_block(block, subscope_depth, diagnostics);
-        }
-        Statement::Defer(defer) => {
-            check_returns_in_block(&defer.body, subscope_depth, diagnostics);
-        }
-        _ => {}
-    }
-}
-
-/// Check an else clause for invalid returns inside subscopes.
-fn check_returns_in_else_clause(
-    else_clause: &ElseClause,
-    subscope_depth: usize,
-    diagnostics: &mut Diagnostics,
-) {
-    match else_clause {
-        ElseClause::Block(block) => {
-            check_returns_in_block(block, subscope_depth, diagnostics);
-        }
-        ElseClause::ElseIf(else_if) => {
-            check_returns_in_block(&else_if.then_block, subscope_depth, diagnostics);
-            if let Some(inner_else) = &else_if.else_block {
-                check_returns_in_else_clause(inner_else, subscope_depth, diagnostics);
-            }
-        }
-    }
-}
-
-/// Check for duplicate subscope labels and validate goto targets in a block
+/// Check for duplicate subscope labels and validate goto/exit targets in a block
 fn check_subscope_labels_in_block(block: &Block, diagnostics: &mut Diagnostics) {
     // First, collect all subscope labels in this function body
     let mut labels: HashMap<&str, Vec<&SubscopeStmt>> = HashMap::new();
@@ -1893,7 +1834,7 @@ fn check_goto_statements_in_block(
     }
 }
 
-/// Check goto statements in a statement
+/// Check goto and exit statements in a statement
 fn check_goto_statements_in_statement(
     stmt: &Statement,
     labels: &HashMap<&str, Vec<&SubscopeStmt>>,
@@ -1902,6 +1843,9 @@ fn check_goto_statements_in_statement(
     match stmt {
         Statement::Goto(goto) => {
             check_goto_target(goto, labels, diagnostics);
+        }
+        Statement::Exit(exit) => {
+            check_exit_target(exit, labels, diagnostics);
         }
         Statement::Subscope(subscope) => {
             check_goto_statements_in_block(&subscope.body, labels, diagnostics);
@@ -1964,6 +1908,35 @@ fn check_goto_target(
                     subscopes.len()
                 ),
                 goto.span,
+            );
+        }
+        Some(_) => {
+            // Valid: exactly one label exists
+        }
+    }
+}
+
+/// Check that an exit statement references exactly one valid label
+fn check_exit_target(
+    exit: &ExitStmt,
+    labels: &HashMap<&str, Vec<&SubscopeStmt>>,
+    diagnostics: &mut Diagnostics,
+) {
+    match labels.get(exit.label.as_str()) {
+        None => {
+            diagnostics.error(
+                format!("Exit references undefined subscope '{}'", exit.label),
+                exit.span,
+            );
+        }
+        Some(subscopes) if subscopes.len() > 1 => {
+            diagnostics.error(
+                format!(
+                    "Exit references ambiguous subscope '{}' (defined {} times)",
+                    exit.label,
+                    subscopes.len()
+                ),
+                exit.span,
             );
         }
         Some(_) => {
@@ -2042,6 +2015,7 @@ fn check_function_calls_in_statement(
             check_function_calls_in_block(&defer.body, function_info, diagnostics);
         }
         Statement::Goto(_) => {}
+        Statement::Exit(_) => {}
     }
 }
 
@@ -2348,12 +2322,11 @@ mod tests {
     }
 
     #[test]
-    fn test_return_with_value_in_subscope_error() {
+    fn test_return_with_value_in_subscope_ok() {
         let content = r#"
             std main(): i64 {
                 subscope loop {
                     return 42
-                    goto loop
                 }
             }
         "#;
@@ -2362,17 +2335,17 @@ mod tests {
         let diagnostics =
             compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
-        // Should have an error about return with value in subscope
-        assert!(!diagnostics.is_empty());
+        // Return with value in subscope is now allowed (propagates to function)
+        assert!(diagnostics.is_empty());
     }
 
     #[test]
-    fn test_return_without_value_in_subscope_ok() {
+    fn test_exit_subscope_ok() {
         let content = r#"
             std main(): void {
                 subscope loop {
                     m x = 1
-                    goto loop
+                    exit loop
                 }
             }
         "#;
@@ -2381,8 +2354,31 @@ mod tests {
         let diagnostics =
             compute_diagnostics_with_context(content, &ast, &config, None, None, None);
 
-        // Subscope without return with value should be ok
+        // Exit statement should be ok
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn test_exit_undefined_subscope_error() {
+        let content = r#"
+            std main(): void {
+                subscope loop {
+                    exit undefined_label
+                }
+            }
+        "#;
+        let ast = parse_content(content);
+        let config = DiagnosticsConfig::default();
+        let diagnostics =
+            compute_diagnostics_with_context(content, &ast, &config, None, None, None);
+
+        // Exit with undefined label should error
+        assert!(!diagnostics.is_empty());
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("undefined subscope"))
+        );
     }
 
     #[test]

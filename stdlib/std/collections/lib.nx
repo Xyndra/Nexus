@@ -19,7 +19,7 @@ std sort_i64([dyn]i64 arr): [dyn]i64 {
     m i: i64 = 0
     subscope copy {
         if (gei64(i, n)) {
-            return
+            exit copy
         }
         result = push(result, arr[i])
         i = addi64(i, 1)
@@ -49,7 +49,7 @@ std partition_i64(m [dyn]i64 arr, i64 low, i64 high): i64 {
     m j = low
     subscope partition_loop {
         if (gei64(j, high)) {
-            return
+            exit partition_loop
         }
         if (lei64(arr[j], pivot)) {
             i = addi64(i, 1)
@@ -83,7 +83,7 @@ std unique_i64([dyn]i64 arr): [dyn]i64 {
     m i: i64 = 0
     subscope outer {
         if (gei64(i, n)) {
-            return
+            exit outer
         }
         c val = arr[i]
 
@@ -92,11 +92,11 @@ std unique_i64([dyn]i64 arr): [dyn]i64 {
         m j: i64 = 0
         subscope check_dup {
             if (gei64(j, len(result))) {
-                return
+                exit check_dup
             }
             if (eqi64(result[j], val)) {
                 found = true
-                return
+                exit check_dup
             }
             j = addi64(j, 1)
             goto check_dup
@@ -124,11 +124,11 @@ std index_of_i64([dyn]i64 arr, i64 value): i64 {
     m found_idx: i64 = negi64(1)
     subscope search {
         if (gei64(i, n)) {
-            return
+            exit search
         }
         if (eqi64(arr[i], value)) {
             found_idx = i
-            return
+            exit search
         }
         i = addi64(i, 1)
         goto search
@@ -156,7 +156,7 @@ std min_i64([dyn]i64 arr): i64 {
     m i: i64 = 1
     subscope find_min {
         if (gei64(i, n)) {
-            return
+            exit find_min
         }
         if (lti64(arr[i], result)) {
             result = arr[i]
@@ -178,7 +178,7 @@ std max_i64([dyn]i64 arr): i64 {
     m i: i64 = 1
     subscope find_max {
         if (gei64(i, n)) {
-            return
+            exit find_max
         }
         if (gti64(arr[i], result)) {
             result = arr[i]
@@ -196,7 +196,7 @@ std sum_i64([dyn]i64 arr): i64 {
     m i: i64 = 0
     subscope sum_loop {
         if (gei64(i, n)) {
-            return
+            exit sum_loop
         }
         result = addi64(result, arr[i])
         i = addi64(i, 1)
@@ -217,7 +217,7 @@ std reverse_i64([dyn]i64 arr): [dyn]i64 {
     m i = subi64(n, 1)
     subscope rev_loop {
         if (lti64(i, 0)) {
-            return
+            exit rev_loop
         }
         result = push(result, arr[i])
         i = subi64(i, 1)

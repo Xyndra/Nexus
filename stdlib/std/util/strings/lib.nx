@@ -22,7 +22,7 @@ $format([dyn]rune template): macro {
     subscope parse {
         // Check if we're done
         if (gei64(i, template_len)) {
-            return
+            exit parse
         }
 
         c char = template[@unchecked i]
@@ -60,7 +60,7 @@ $format([dyn]rune template): macro {
                         c lit_len = len(current_literal)
                         subscope escape_lit {
                             if (gei64(k, lit_len)) {
-                                return
+                                exit escape_lit
                             }
                             c echar = current_literal[@unchecked k]
                             if (eqr(echar, "\""[0])) {
@@ -110,7 +110,7 @@ $format([dyn]rune template): macro {
         c lit_len = len(current_literal)
         subscope escape_final {
             if (gei64(k, lit_len)) {
-                return
+                exit escape_final
             }
             c echar = current_literal[@unchecked k]
             if (eqr(echar, "\""[0])) {

@@ -449,6 +449,7 @@ impl<'a> TypeChecker<'a> {
             Statement::Defer(defer) => self.check_block(&defer.body),
             Statement::Subscope(subscope) => self.check_subscope(subscope),
             Statement::Goto(_) => Ok(()), // Goto doesn't need type checking
+            Statement::Exit(_) => Ok(()), // Exit doesn't need type checking
             Statement::Block(block) => self.check_block(block),
         }
     }
@@ -506,18 +507,6 @@ impl<'a> TypeChecker<'a> {
 
     /// Check return statement
     fn check_return(&mut self, ret: &ReturnStmt) -> NexusResult<()> {
-        // If we're inside a subscope, return acts as a break and should have no value
-        if self.subscope_depth > 0 {
-            if ret.value.is_some() {
-                return Err(NexusError::TypeError {
-                    message: "Return statement inside subscope cannot have a value (use bare 'return' to break from subscope)".to_string(),
-                    span: ret.span,
-                });
-            }
-            return Ok(());
-        }
-
-        // Normal return statement (not in subscope)
         let expected_type =
             self.current_return_type
                 .as_ref()

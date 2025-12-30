@@ -8,7 +8,7 @@ std fib_iterative(i64 n): i64 {
     m next = 0
     subscope loop {
         if (gti64(idx, n)) {
-            return
+            exit loop
         }
         next = addi64(a, b)
         a = b

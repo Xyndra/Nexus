@@ -32,7 +32,7 @@ $all([dyn]rune checks): macro {
                 }
                 expr_count = addi64(expr_count, 1)
             }
-            return
+            exit parse
         }
 
         c char = checks[@unchecked i]
@@ -75,7 +75,7 @@ $all([dyn]rune checks): macro {
     c result_len = len(result)
     subscope trim {
         if (gei64(j, result_len)) {
-            return
+            exit trim
         }
         c char = result[@unchecked j]
         trimmed = push(trimmed, char)

@@ -13,7 +13,7 @@ compat main(): void {
     m i = 0
     subscope for {
         if (gti64(i, 20)) {
-            return
+            exit for
         }
         println(fib_recursive(i))
         i = addi64(i, 1)
@@ -24,7 +24,7 @@ compat main(): void {
     m j = 0
     subscope for2 {
         if (gti64(j, 20)) {
-            return
+            exit for2
         }
         println(fib_iterative(j))
         j = addi64(j, 1)

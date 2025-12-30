@@ -377,14 +377,6 @@ impl Interpreter {
     /// Validate a statement for semantic errors
     fn validate_statement(stmt: &Statement, subscope_depth: usize) -> NexusResult<()> {
         match stmt {
-            Statement::Return(ret) => {
-                if subscope_depth > 0 && ret.value.is_some() {
-                    return Err(NexusError::RuntimeError {
-                        message: "Return inside a subscope cannot have a value".to_string(),
-                        span: Some(ret.span),
-                    });
-                }
-            }
             Statement::If(if_stmt) => {
                 Self::validate_block(&if_stmt.then_block, subscope_depth)?;
                 if let Some(else_clause) = &if_stmt.else_block {
@@ -872,10 +864,13 @@ impl Interpreter {
                     self.execute_deferred(&deferred, scope)?;
                     return Ok(ControlFlow::Return(val));
                 }
-
                 ControlFlow::Goto(label) => {
                     self.execute_deferred(&deferred, scope)?;
                     return Ok(ControlFlow::Goto(label));
+                }
+                ControlFlow::Exit(label) => {
+                    self.execute_deferred(&deferred, scope)?;
+                    return Ok(ControlFlow::Exit(label));
                 }
             }
         }
@@ -893,6 +888,10 @@ impl Interpreter {
             ControlFlow::Return(val) => Ok(val),
             ControlFlow::Goto(label) => Err(NexusError::RuntimeError {
                 message: format!("Goto to undefined label: {}", label),
+                span: None,
+            }),
+            ControlFlow::Exit(label) => Err(NexusError::RuntimeError {
+                message: format!("Exit to undefined subscope: {}", label),
                 span: None,
             }),
         }
@@ -939,6 +938,7 @@ impl Interpreter {
             }
             Statement::Subscope(subscope) => self.execute_subscope(subscope, scope),
             Statement::Goto(goto) => Ok(ControlFlow::Goto(goto.label.clone())),
+            Statement::Exit(exit) => Ok(ControlFlow::Exit(exit.label.clone())),
             Statement::Block(block) => {
                 let mut inner_scope = scope.child();
                 self.execute_block_with_flow(block, &mut inner_scope)
@@ -1112,16 +1112,7 @@ impl Interpreter {
     /// Execute a return statement
     fn execute_return(&mut self, ret: &ReturnStmt, scope: &mut Scope) -> NexusResult<Value> {
         match &ret.value {
-            Some(expr) => {
-                // Returns inside subscopes cannot have values
-                if self.subscope_depth > 0 {
-                    return Err(NexusError::RuntimeError {
-                        message: "Return inside a subscope cannot have a value".to_string(),
-                        span: Some(ret.span),
-                    });
-                }
-                self.evaluate_expression(expr, scope)
-            }
+            Some(expr) => self.evaluate_expression(expr, scope),
             None => Ok(Value::Void),
         }
     }
@@ -1221,20 +1212,31 @@ impl Interpreter {
                     return Err(e);
                 }
                 Ok(ControlFlow::Continue(_)) => {
-                    // Block completed normally without goto or return - this is an error
+                    // Block completed normally without goto or exit - this is an error
                     self.subscope_depth -= 1;
                     return Err(NexusError::RuntimeError {
                         message: format!(
-                            "Subscope '{}' must end with 'goto ...' or 'return'",
-                            subscope.name
+                            "Subscope '{}' must end with 'goto ...' or 'exit {}'",
+                            subscope.name, subscope.name
                         ),
                         span: Some(subscope.span),
                     });
                 }
-                Ok(ControlFlow::Return(_)) => {
-                    // Return in a subscope exits the subscope with void
+                Ok(ControlFlow::Return(val)) => {
+                    // Return in a subscope propagates up (for function return)
                     self.subscope_depth -= 1;
-                    return Ok(ControlFlow::Continue(Value::Void));
+                    return Ok(ControlFlow::Return(val));
+                }
+                Ok(ControlFlow::Exit(label)) => {
+                    // Exit the subscope with the given label
+                    if label == subscope.name {
+                        // Exit this subscope
+                        self.subscope_depth -= 1;
+                        return Ok(ControlFlow::Continue(Value::Void));
+                    }
+                    // Exit for a different label, propagate up
+                    self.subscope_depth -= 1;
+                    return Ok(ControlFlow::Exit(label));
                 }
                 Ok(ControlFlow::Goto(label)) => {
                     // Check if this goto is for us
@@ -2116,6 +2118,8 @@ enum ControlFlow {
     Return(Value),
     /// Goto a labeled subscope
     Goto(String),
+    /// Exit a subscope with the given label
+    Exit(String),
 }
 
 /// A captured lambda value

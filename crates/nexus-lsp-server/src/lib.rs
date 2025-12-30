@@ -479,13 +479,12 @@ mod tests {
     }
 
     #[test]
-    fn test_return_with_value_in_subscope_error() {
+    fn test_return_with_value_in_subscope_ok() {
         let mut lsp = Lsp::new();
         let content = r#"
             std main(): i64 {
                 subscope loop {
                     return 42
-                    goto loop
                 }
             }
         "#;
@@ -493,17 +492,18 @@ mod tests {
 
         let diagnostics = lsp.get_diagnostics("file:///test.nx");
         assert!(diagnostics.is_some());
-        assert!(!diagnostics.unwrap().is_empty());
+        // Return with value in subscope is now allowed (propagates to function)
+        assert!(diagnostics.unwrap().is_empty());
     }
 
     #[test]
-    fn test_return_without_value_in_subscope_ok() {
+    fn test_exit_subscope_ok() {
         let mut lsp = Lsp::new();
         let content = r#"
             std main(): void {
                 subscope loop {
                     m x = 1
-                    goto loop
+                    exit loop
                 }
             }
         "#;
@@ -511,7 +511,7 @@ mod tests {
 
         let diagnostics = lsp.get_diagnostics("file:///test.nx");
         assert!(diagnostics.is_some());
-        // Subscope without return with value should be ok
+        // Exit statement should be ok
         assert!(diagnostics.unwrap().is_empty());
     }
 
