@@ -92,8 +92,6 @@ pub struct Interpreter {
     current_color: FunctionColor,
     /// Current module name
     current_module: String,
-    /// Subscope depth counter (0 = not in a subscope)
-    subscope_depth: usize,
     /// Program arguments (stored for compat.proc.getargs)
     program_args: Vec<Value>,
 }
@@ -133,7 +131,6 @@ impl Interpreter {
             step_count: 0,
             current_color: FunctionColor::Std,
             current_module: "main".to_string(),
-            subscope_depth: 0,
             program_args: Vec::new(),
         }
     }
@@ -355,10 +352,10 @@ impl Interpreter {
         for item in &program.items {
             match item {
                 Item::Function(func) => {
-                    Self::validate_block(&func.body, 0)?;
+                    Self::validate_block(&func.body)?;
                 }
                 Item::Method(method) => {
-                    Self::validate_block(&method.body, 0)?;
+                    Self::validate_block(&method.body)?;
                 }
                 _ => {}
             }
@@ -367,27 +364,27 @@ impl Interpreter {
     }
 
     /// Validate a block for semantic errors
-    fn validate_block(block: &Block, subscope_depth: usize) -> NexusResult<()> {
+    fn validate_block(block: &Block) -> NexusResult<()> {
         for stmt in &block.statements {
-            Self::validate_statement(stmt, subscope_depth)?;
+            Self::validate_statement(stmt)?;
         }
         Ok(())
     }
 
     /// Validate a statement for semantic errors
-    fn validate_statement(stmt: &Statement, subscope_depth: usize) -> NexusResult<()> {
+    fn validate_statement(stmt: &Statement) -> NexusResult<()> {
         match stmt {
             Statement::If(if_stmt) => {
-                Self::validate_block(&if_stmt.then_block, subscope_depth)?;
+                Self::validate_block(&if_stmt.then_block)?;
                 if let Some(else_clause) = &if_stmt.else_block {
-                    Self::validate_else_clause(else_clause, subscope_depth)?;
+                    Self::validate_else_clause(else_clause)?;
                 }
             }
             Statement::Subscope(subscope) => {
-                Self::validate_block(&subscope.body, subscope_depth + 1)?;
+                Self::validate_block(&subscope.body)?;
             }
             Statement::Block(block) => {
-                Self::validate_block(block, subscope_depth)?;
+                Self::validate_block(block)?;
             }
             _ => {}
         }
@@ -395,15 +392,15 @@ impl Interpreter {
     }
 
     /// Validate an else clause for semantic errors
-    fn validate_else_clause(else_clause: &ElseClause, subscope_depth: usize) -> NexusResult<()> {
+    fn validate_else_clause(else_clause: &ElseClause) -> NexusResult<()> {
         match else_clause {
             ElseClause::Block(block) => {
-                Self::validate_block(block, subscope_depth)?;
+                Self::validate_block(block)?;
             }
             ElseClause::ElseIf(else_if) => {
-                Self::validate_block(&else_if.then_block, subscope_depth)?;
+                Self::validate_block(&else_if.then_block)?;
                 if let Some(inner_else) = &else_if.else_block {
-                    Self::validate_else_clause(inner_else, subscope_depth)?;
+                    Self::validate_else_clause(inner_else)?;
                 }
             }
         }
@@ -1201,19 +1198,14 @@ impl Interpreter {
         let mut body_scope = scope.child();
         body_scope.set_label(subscope.name.clone());
 
-        // Track that we're in a subscope
-        self.subscope_depth += 1;
-
         loop {
             let result = self.execute_block_with_flow(&subscope.body, &mut body_scope);
             match result {
                 Err(e) => {
-                    self.subscope_depth -= 1;
                     return Err(e);
                 }
                 Ok(ControlFlow::Continue(_)) => {
                     // Block completed normally without goto or exit - this is an error
-                    self.subscope_depth -= 1;
                     return Err(NexusError::RuntimeError {
                         message: format!(
                             "Subscope '{}' must end with 'goto ...' or 'exit {}'",
@@ -1224,18 +1216,15 @@ impl Interpreter {
                 }
                 Ok(ControlFlow::Return(val)) => {
                     // Return in a subscope propagates up (for function return)
-                    self.subscope_depth -= 1;
                     return Ok(ControlFlow::Return(val));
                 }
                 Ok(ControlFlow::Exit(label)) => {
                     // Exit the subscope with the given label
                     if label == subscope.name {
-                        // Exit this subscope
-                        self.subscope_depth -= 1;
+                        // TODO: Check this
                         return Ok(ControlFlow::Continue(Value::Void));
                     }
                     // Exit for a different label, propagate up
-                    self.subscope_depth -= 1;
                     return Ok(ControlFlow::Exit(label));
                 }
                 Ok(ControlFlow::Goto(label)) => {
@@ -1247,7 +1236,6 @@ impl Interpreter {
                         continue;
                     }
                     // Goto for a different label, propagate up
-                    self.subscope_depth -= 1;
                     return Ok(ControlFlow::Goto(label));
                 }
             }
@@ -1512,14 +1500,12 @@ impl Interpreter {
         // Save current state
         let prev_color = self.current_color;
         let prev_module = self.current_module.clone();
-        let prev_subscope_depth = self.subscope_depth;
 
         // Set new state
         self.current_color = func.color;
         if let Some(mod_name) = module {
             self.current_module = mod_name.to_string();
         }
-        self.subscope_depth = 0; // New function call starts fresh
 
         // Create function scope with parameters
         let mut func_scope = Scope::new();
@@ -1541,7 +1527,6 @@ impl Interpreter {
         // Restore state
         self.current_color = prev_color;
         self.current_module = prev_module;
-        self.subscope_depth = prev_subscope_depth;
         self.recursion_depth -= 1;
 
         result.map(|v| (v, func_scope))
@@ -1660,9 +1645,7 @@ impl Interpreter {
         }
 
         let prev_color = self.current_color;
-        let prev_subscope_depth = self.subscope_depth;
         self.current_color = method.color;
-        self.subscope_depth = 0; // New method call starts fresh
 
         let mut method_scope = Scope::new();
 
@@ -1699,7 +1682,6 @@ impl Interpreter {
         let result = self.execute_block(&method.body, &mut method_scope);
 
         self.current_color = prev_color;
-        self.subscope_depth = prev_subscope_depth;
         self.recursion_depth -= 1;
 
         result

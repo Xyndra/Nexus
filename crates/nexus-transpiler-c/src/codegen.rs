@@ -37,7 +37,6 @@ pub struct CCodeGenerator<'a> {
     current_module: String,
     builtins: BuiltinRegistry,
     interpreter: Option<Interpreter>,
-    subscope_depth: usize,
     macro_context: Option<MacroExpansionContext>,
     variable_types: std::collections::HashMap<String, String>,
     /// Track element types for array variables
@@ -76,7 +75,6 @@ impl<'a> CCodeGenerator<'a> {
             current_module: String::new(),
             builtins: BuiltinRegistry::new(),
             interpreter: None,
-            subscope_depth: 0,
             macro_context: None,
             variable_types: std::collections::HashMap::new(),
             array_element_types: std::collections::HashMap::new(),
@@ -87,14 +85,6 @@ impl<'a> CCodeGenerator<'a> {
             expected_array_elem_type: None,
             current_function_array_elem_type: None,
         }
-    }
-
-    fn enter_subscope(&mut self) {
-        self.subscope_depth += 1;
-    }
-
-    fn exit_subscope(&mut self) {
-        self.subscope_depth = self.subscope_depth.saturating_sub(1);
     }
 
     /// Expand a top-level macro call and return the generated items
@@ -972,12 +962,7 @@ int main(int argc, char** argv) {{
         code.push_str(&self.indent(&format!("{}:\n", label)));
         code.push_str(&self.indent("do {\n"));
 
-        // Track that we're in a subscope
-        self.enter_subscope();
-
         code.push_str(&self.generate_block(&subscope.body)?);
-
-        self.exit_subscope();
 
         code.push_str(&self.indent("} while (0);\n"));
         // End label for exit statements to jump to

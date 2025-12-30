@@ -28,7 +28,6 @@ pub struct TypeChecker<'a> {
     current_function_color: Option<FunctionColor>,
     current_return_type: Option<NexusType>,
     scope_depth: usize,
-    subscope_depth: usize,
     builtins: BuiltinRegistry,
     /// Imported modules for module-qualified calls (e.g., use mathlib)
     imported_modules: HashSet<String>,
@@ -60,7 +59,6 @@ impl<'a> TypeChecker<'a> {
             current_function_color: None,
             current_return_type: None,
             scope_depth: 0,
-            subscope_depth: 0,
             builtins: BuiltinRegistry::new(),
             imported_modules: HashSet::new(),
         };
@@ -581,9 +579,7 @@ impl<'a> TypeChecker<'a> {
     /// Check subscope statement
     fn check_subscope(&mut self, subscope: &SubscopeStmt) -> NexusResult<()> {
         self.push_scope();
-        self.subscope_depth += 1;
         self.check_block(&subscope.body)?;
-        self.subscope_depth -= 1;
         self.pop_scope();
         Ok(())
     }
