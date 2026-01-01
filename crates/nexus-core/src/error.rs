@@ -153,6 +153,15 @@ pub enum NexusError {
     // === Internal Errors ===
     #[error("Internal error: {message}")]
     InternalError { message: String },
+
+    /// Error wrapper that carries optional filename/source context. Display delegates to the
+    /// inner error (so existing formatting is preserved).
+    #[error("{inner}")]
+    WithContext {
+        inner: Box<NexusError>,
+        filename: Option<String>,
+        source_text: Option<String>,
+    },
 }
 
 impl NexusError {
@@ -192,12 +201,60 @@ impl NexusError {
             NexusError::TranspileError { .. } => None,
             NexusError::SandboxViolation { span, .. } => span.as_ref(),
             NexusError::InternalError { .. } => None,
+            NexusError::WithContext { inner, .. } => inner.span(),
         }
     }
 
     /// Check if this error is a warning rather than a hard error.
     pub fn is_warning(&self) -> bool {
-        matches!(self, NexusError::UnderscorePrefixWarning { .. })
+        match self {
+            NexusError::WithContext { inner, .. } => inner.is_warning(),
+            _ => matches!(self, NexusError::UnderscorePrefixWarning { .. }),
+        }
+    }
+
+    /// Format this error with an optional source snippet and an optional filename.
+    ///
+    /// If this error is a `WithContext` wrapper, prefer the context embedded in the wrapper
+    /// unless explicit `source` / `filename` arguments are provided. Otherwise fall back to
+    /// rendering this error as a diagnostic.
+    pub fn format_with_source(&self, source: Option<&str>, filename: Option<&str>) -> String {
+        if let NexusError::WithContext {
+            inner,
+            filename: ctx_file,
+            source_text: ctx_source_text,
+        } = self
+        {
+            // Prefer explicit arguments, otherwise use the context stored in the wrapper.
+            let src = source.or_else(|| ctx_source_text.as_deref());
+            let fname = filename.or_else(|| ctx_file.as_deref());
+            return inner.format_with_source(src, fname);
+        }
+
+        let severity = if self.is_warning() {
+            DiagnosticSeverity::Warning
+        } else {
+            DiagnosticSeverity::Error
+        };
+
+        let diagnostic = Diagnostic {
+            severity,
+            message: self.to_string(),
+            span: self.span().cloned(),
+            hints: Vec::new(),
+        };
+
+        diagnostic.format(source)
+    }
+
+    /// Wrap this error with optional filename/source context so callers that have the source
+    /// text available can automatically render a snippet.
+    pub fn with_context(self, filename: Option<String>, source_text: Option<String>) -> NexusError {
+        NexusError::WithContext {
+            inner: Box::new(self),
+            filename,
+            source_text,
+        }
     }
 }
 
@@ -253,6 +310,45 @@ impl Diagnostic {
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hints.push(hint.into());
         self
+    }
+
+    /// Format this diagnostic optionally using the provided source text and filename.
+    ///
+    /// If `source` is provided and the diagnostic has an associated `Span`, the resulting string
+    /// will include the source line containing the span and a caret marker highlighting the span.
+    pub fn format(&self, source: Option<&str>) -> String {
+        let sev_str = match self.severity {
+            DiagnosticSeverity::Error => "error",
+            DiagnosticSeverity::Warning => "warning",
+            DiagnosticSeverity::Info => "info",
+            DiagnosticSeverity::Hint => "hint",
+        };
+
+        let mut out = format!("{}: {}", sev_str, self.message);
+
+        if let Some(span) = &self.span {
+            if let Some(src) = source {
+                // Try to render a snippet (line + marker) using Span helper.
+                if let Some(snippet) = span.format_snippet(src) {
+                    out.push('\n');
+                    out.push_str(&snippet);
+                } else {
+                    out.push_str(&format!("\n  --> {}\n", span));
+                }
+            } else {
+                // No source available; just show location.
+                out.push_str(&format!("\n  --> {}\n", span));
+            }
+        }
+
+        if !self.hints.is_empty() {
+            out.push_str("\nHints:\n");
+            for hint in &self.hints {
+                out.push_str(&format!("  - {}\n", hint));
+            }
+        }
+
+        out
     }
 }
 

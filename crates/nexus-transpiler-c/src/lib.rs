@@ -83,9 +83,6 @@ impl CTranspiler {
         // Type check all modules
         let typed_programs = Self::typecheck_all_static(&mut self.type_registry, &resolved)?;
 
-        // Collect all programs for cross-module macro expansion
-        let all_programs: Vec<&Program> = typed_programs.values().collect();
-
         // Collect module info for cross-module references (in load order)
         let all_module_info: Vec<(String, &Program)> = resolved
             .sources
@@ -118,7 +115,7 @@ impl CTranspiler {
         let mut generator = CCodeGenerator::new(&self.config, &self.type_registry);
 
         // First pass: register all types and functions from all modules
-        generator.register_all_modules(&all_module_info, &all_programs)?;
+        generator.register_all_modules(&all_module_info)?;
 
         // Second pass: generate code for each top-level module group
         let mut files = HashMap::new();
@@ -168,8 +165,15 @@ impl CTranspiler {
             all_programs.push(program);
         }
 
-        // Build macro expansion context from all parsed programs
-        let macro_ctx = MacroExpansionContext::from_programs(all_programs.iter());
+        // Build macro expansion context from all parsed programs with module names
+        // This allows proper import resolution during macro expansion
+        let programs_with_modules: Vec<(&str, &Program)> = resolved
+            .sources
+            .iter()
+            .zip(all_programs.iter())
+            .map(|(source, prog)| (source.name.as_str(), prog))
+            .collect();
+        let macro_ctx = MacroExpansionContext::from_programs_with_modules(programs_with_modules);
 
         // Now register types, expanding top-level macros as needed
         // Also build expanded programs that include macro-generated items
@@ -384,11 +388,8 @@ mod tests {
         let mut generator = CCodeGenerator::new(&config, &type_registry);
 
         let all_module_info = vec![("test".to_string(), &program)];
-        let all_programs: Vec<&Program> = vec![&program];
 
-        generator
-            .register_all_modules(&all_module_info, &all_programs)
-            .unwrap();
+        generator.register_all_modules(&all_module_info).unwrap();
         let result = generator.generate_module_group("test", &all_module_info, true);
         assert!(result.is_ok());
     }

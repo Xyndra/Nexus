@@ -408,6 +408,8 @@ pub fn compute_diagnostics_with_context(
                     check_subscope_labels_in_block(&func.body, &mut diagnostics);
                     // Check for variable redefinitions within the function
                     check_variable_redefinitions_in_block(&func.body, &mut diagnostics);
+                    // Check for empty arrays without type annotations
+                    check_empty_arrays_in_block(&func.body, &mut diagnostics);
                     // Check function call arguments
                     check_function_calls_in_block(&func.body, &function_info, &mut diagnostics);
                     // Check for extra content after goto statements
@@ -439,6 +441,8 @@ pub fn compute_diagnostics_with_context(
                     check_subscope_labels_in_block(&method.body, &mut diagnostics);
                     // Check for variable redefinitions within the method
                     check_variable_redefinitions_in_block(&method.body, &mut diagnostics);
+                    // Check for empty arrays without type annotations
+                    check_empty_arrays_in_block(&method.body, &mut diagnostics);
                     // Check function call arguments
                     check_function_calls_in_block(&method.body, &function_info, &mut diagnostics);
                     // Check for extra content after goto statements
@@ -1680,6 +1684,64 @@ fn check_variable_redefinitions_in_block(block: &Block, diagnostics: &mut Diagno
 
     for stmt in &block.statements {
         check_variable_redefinitions_in_statement(stmt, &mut variables, diagnostics);
+    }
+}
+
+/// Check for empty array literals without type annotations
+fn check_empty_arrays_in_block(block: &Block, diagnostics: &mut Diagnostics) {
+    for stmt in &block.statements {
+        check_empty_arrays_in_statement(stmt, diagnostics);
+    }
+}
+
+fn check_empty_arrays_in_statement(stmt: &Statement, diagnostics: &mut Diagnostics) {
+    match stmt {
+        Statement::VarDecl(var) => {
+            // Check if this is an empty array without a type annotation
+            if var.ty.is_none() {
+                if let Expression::Array(arr) = &var.init {
+                    if arr.elements.is_empty() {
+                        diagnostics.error(
+                            format!(
+                                "Cannot infer type of empty array. Add a type annotation to variable '{}', e.g.: m {}: [dyn]YourType = []",
+                                var.name, var.name
+                            ),
+                            arr.span,
+                        );
+                    }
+                }
+            }
+        }
+        Statement::If(if_stmt) => {
+            check_empty_arrays_in_block(&if_stmt.then_block, diagnostics);
+            if let Some(else_clause) = &if_stmt.else_block {
+                check_empty_arrays_in_else_clause(else_clause, diagnostics);
+            }
+        }
+        Statement::Subscope(subscope) => {
+            check_empty_arrays_in_block(&subscope.body, diagnostics);
+        }
+        Statement::Block(block) => {
+            check_empty_arrays_in_block(block, diagnostics);
+        }
+        Statement::Defer(defer) => {
+            check_empty_arrays_in_block(&defer.body, diagnostics);
+        }
+        _ => {}
+    }
+}
+
+fn check_empty_arrays_in_else_clause(else_clause: &ElseClause, diagnostics: &mut Diagnostics) {
+    match else_clause {
+        ElseClause::ElseIf(if_stmt) => {
+            check_empty_arrays_in_block(&if_stmt.then_block, diagnostics);
+            if let Some(next_else) = &if_stmt.else_block {
+                check_empty_arrays_in_else_clause(next_else, diagnostics);
+            }
+        }
+        ElseClause::Block(block) => {
+            check_empty_arrays_in_block(block, diagnostics);
+        }
     }
 }
 

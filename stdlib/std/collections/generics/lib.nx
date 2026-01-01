@@ -163,8 +163,8 @@ $define_map([dyn]rune key_name, [dyn]rune key_type, [dyn]rune key_eq, [dyn]rune 
         goto find_key
     }
     if (lti64(found_idx, 0)) { return m_map }
-    m new_keys = []
-    m new_values = []
+    m new_keys: ${keys_type} = []
+    m new_values: ${values_type} = []
     m i: i64 = 0
     subscope rebuild {
         if (gei64(i, n)) { exit rebuild }
@@ -267,7 +267,7 @@ $define_set([dyn]rune type_name, [dyn]rune type_def, [dyn]rune type_eq): macro {
         goto find_value
     }
     if (lti64(found_idx, 0)) { return s }
-    m new_items = []
+    m new_items: ${items_type} = []
     m i: i64 = 0
     subscope rebuild {
         if (gei64(i, n)) { exit rebuild }

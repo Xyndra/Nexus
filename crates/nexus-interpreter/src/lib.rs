@@ -246,22 +246,44 @@ impl Interpreter {
     fn expand_top_level_macro(&mut self, macro_call: &TopLevelMacroCall) -> NexusResult<()> {
         // Look up the macro definition
         let qualified_name = format!("{}.{}", self.current_module, macro_call.name);
-        let macro_def = if let Some(m) = self.macros.get(&qualified_name).cloned() {
-            Some(m)
-        } else {
-            // Try to find it in imported symbols
-            let source_module = self.imported_symbols.get(&macro_call.name).cloned();
-            if let Some(module) = source_module {
-                let full_name = format!("{}.{}", module, macro_call.name);
-                self.macros.get(&full_name).cloned()
+        let (macro_def, macro_source_module) =
+            if let Some(m) = self.macros.get(&qualified_name).cloned() {
+                let source = self
+                    .macro_source_modules
+                    .get(&qualified_name)
+                    .cloned()
+                    .unwrap_or_else(|| self.current_module.clone());
+                (Some(m), source)
             } else {
-                None
-            }
-        }
-        .ok_or_else(|| NexusError::RuntimeError {
+                // Try to find it in current module's imported symbols (not global)
+                let current_module_imports = self
+                    .module_imported_symbols
+                    .get(&self.current_module)
+                    .cloned()
+                    .unwrap_or_default();
+                let source_module = current_module_imports.get(&macro_call.name).cloned();
+                if let Some(module) = source_module {
+                    let full_name = format!("{}.{}", module, macro_call.name);
+                    let macro_def = self.macros.get(&full_name).cloned();
+                    let source = self
+                        .macro_source_modules
+                        .get(&full_name)
+                        .cloned()
+                        .unwrap_or_else(|| module.clone());
+                    (macro_def, source)
+                } else {
+                    (None, self.current_module.clone())
+                }
+            };
+
+        let macro_def = macro_def.ok_or_else(|| NexusError::RuntimeError {
             message: format!("Top-level macro '{}' not found", macro_call.name),
             span: Some(macro_call.span),
         })?;
+
+        // Save current module context and switch to macro's source module
+        let prev_module = self.current_module.clone();
+        self.current_module = macro_source_module;
 
         // Create a scope for macro execution
         let mut macro_scope = Scope::new();
@@ -281,7 +303,18 @@ impl Interpreter {
         }
 
         // Execute macro body to get the code string
-        let macro_result = self.execute_block(&macro_def.body, &mut macro_scope)?;
+        let macro_result = match self.execute_block(&macro_def.body, &mut macro_scope) {
+            Ok(result) => result,
+            Err(e) => {
+                // Restore module context on error
+                self.current_module = prev_module;
+                return Err(e);
+            }
+        };
+
+        // Restore module context after macro body execution
+        // Items will be registered in the calling module (prev_module), not the macro's source
+        self.current_module = prev_module;
 
         // The macro must return a string containing item definitions
         let code_string = match macro_result {
@@ -1420,8 +1453,14 @@ impl Interpreter {
         }
 
         // Determine the qualified function name to look up
-        // First check if this is an imported symbol
-        let qualified_name = if let Some(source_module) = self.imported_symbols.get(&call.function)
+        // Check if this is an imported symbol in the CURRENT MODULE's imports (not global)
+        let current_module_imports = self
+            .module_imported_symbols
+            .get(&self.current_module)
+            .cloned()
+            .unwrap_or_default();
+
+        let qualified_name = if let Some(source_module) = current_module_imports.get(&call.function)
         {
             format!("{}.{}", source_module, call.function)
         } else {
@@ -1694,8 +1733,14 @@ impl Interpreter {
         scope: &mut Scope,
     ) -> NexusResult<Value> {
         // Determine the qualified macro name to look up
-        // First check if this is an imported symbol (no $ prefix in import)
-        let qualified_name = if let Some(source_module) = self.imported_symbols.get(&call.name) {
+        // Check if this is an imported symbol in the CURRENT MODULE's imports (not global)
+        let current_module_imports = self
+            .module_imported_symbols
+            .get(&self.current_module)
+            .cloned()
+            .unwrap_or_default();
+
+        let qualified_name = if let Some(source_module) = current_module_imports.get(&call.name) {
             format!("{}.{}", source_module, call.name)
         } else {
             // Try current module
@@ -2020,6 +2065,14 @@ impl Interpreter {
         self.current_module = module.into();
     }
 
+    /// Get the current module name (read-only).
+    ///
+    /// This is useful for callers that need to inspect which module the interpreter
+    /// is currently executing (for example, to attach source/module context to errors).
+    pub fn current_module(&self) -> &str {
+        &self.current_module
+    }
+
     /// Set program arguments (for compat.proc.getargs)
     pub fn set_args(&mut self, args: Vec<Value>) {
         self.program_args = args;
@@ -2072,6 +2125,15 @@ impl Interpreter {
         // Also add to imported_symbols so it can be found during macro expansion
         self.imported_symbols
             .insert(macro_def.name.clone(), String::new());
+    }
+
+    /// Register an import for a module (for sandboxed macro expansion)
+    /// This sets up module_imported_symbols so nested macro calls can resolve their dependencies
+    pub fn register_import(&mut self, module_name: &str, symbol: &str, source_module: &str) {
+        self.module_imported_symbols
+            .entry(module_name.to_string())
+            .or_default()
+            .insert(symbol.to_string(), source_module.to_string());
     }
 
     /// Reset step counter (for sandboxing)

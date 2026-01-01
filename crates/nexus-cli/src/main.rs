@@ -400,7 +400,18 @@ fn run_resolved_project(
     interpreter.set_args(args);
 
     // Run the main function
-    interpreter.run()?;
+    match interpreter.run() {
+        Ok(_) => {}
+        Err(e) => {
+            // Try to attach module/source context so callers (e.g., CLI) can render a snippet.
+            let module_name = interpreter.current_module().to_string();
+            if let Some(src) = resolved.sources.iter().find(|s| s.name == module_name) {
+                return Err(e.with_context(Some(module_name), Some(src.content.clone())));
+            } else {
+                return Err(e);
+            }
+        }
+    }
 
     Ok(())
 }
@@ -813,11 +824,11 @@ fn run_repl() -> Result<(), NexusError> {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Runtime error: {}", e);
+                            eprintln!("{}", e.format_with_source(Some(&accumulated), None));
                         }
                     },
                     Err(e) => {
-                        eprintln!("Load error: {}", e);
+                        eprintln!("{}", e.format_with_source(Some(&accumulated), None));
                     }
                 }
                 accumulated.clear();
@@ -827,7 +838,7 @@ fn run_repl() -> Result<(), NexusError> {
                 continue;
             }
             Err(e) => {
-                eprintln!("Parse error: {}", e);
+                eprintln!("{}", e.format_with_source(Some(&accumulated), None));
                 accumulated.clear();
             }
         }
@@ -1096,7 +1107,19 @@ fn main() -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            if let Some(path) = &config.file {
+                match std::fs::read_to_string(path) {
+                    Ok(src) => {
+                        let path_name = path.display().to_string();
+                        eprintln!("{}", e.format_with_source(Some(&src), Some(&path_name)));
+                    }
+                    Err(_) => {
+                        eprintln!("{}", e.format_with_source(None, None));
+                    }
+                }
+            } else {
+                eprintln!("Error: {}", e);
+            }
             ExitCode::FAILURE
         }
     }

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use nexus_core::{NexusResult, VarModifiers};
 use nexus_interpreter::{Interpreter, InterpreterConfig, Scope, Value, Variable};
-use nexus_parser::{Expression, Item, Literal, LiteralKind, MacroDef, Program};
+use nexus_parser::{Expression, Item, Literal, LiteralKind, MacroDef, Program, UseStatement};
 
 /// Result of attempting to expand a macro
 #[derive(Debug, Clone)]
@@ -33,8 +33,14 @@ pub enum MacroExpansionResult {
 
 /// Context for macro expansion containing macro definitions
 pub struct MacroExpansionContext {
-    /// Macro definitions (name -> MacroDef)
+    /// Macro definitions by short name (name -> MacroDef)
     macros: HashMap<String, MacroDef>,
+    /// Macro definitions by qualified name (module.name -> MacroDef)
+    qualified_macros: HashMap<String, MacroDef>,
+    /// Module that each macro was defined in (short_name -> module_name)
+    macro_modules: HashMap<String, String>,
+    /// Per-module imports (module_name -> (symbol_name -> source_module))
+    module_imports: HashMap<String, HashMap<String, String>>,
 }
 
 impl MacroExpansionContext {
@@ -42,10 +48,14 @@ impl MacroExpansionContext {
     pub fn new() -> Self {
         Self {
             macros: HashMap::new(),
+            qualified_macros: HashMap::new(),
+            macro_modules: HashMap::new(),
+            module_imports: HashMap::new(),
         }
     }
 
     /// Build a context from multiple programs (for cross-file support)
+    /// This version assumes no module names - macros registered by short name only
     pub fn from_programs<'a>(programs: impl IntoIterator<Item = &'a Program>) -> Self {
         let mut ctx = Self::new();
         for program in programs {
@@ -56,6 +66,51 @@ impl MacroExpansionContext {
             }
         }
         ctx
+    }
+
+    /// Build a context from multiple programs with module names
+    /// This allows proper import resolution during macro expansion
+    pub fn from_programs_with_modules<'a>(
+        programs: impl IntoIterator<Item = (&'a str, &'a Program)>,
+    ) -> Self {
+        let mut ctx = Self::new();
+        for (module_name, program) in programs {
+            // Extract use statements from this module
+            let mut module_imports: HashMap<String, String> = HashMap::new();
+            for item in &program.items {
+                if let Item::Use(use_stmt) = item {
+                    Self::extract_imports_from_use(&mut module_imports, use_stmt);
+                }
+            }
+            if !module_imports.is_empty() {
+                ctx.module_imports
+                    .insert(module_name.to_string(), module_imports);
+            }
+
+            // Register macros with module context
+            for item in &program.items {
+                if let Item::Macro(macro_def) = item {
+                    let short_name = macro_def.name.clone();
+                    let qualified_name = format!("{}.{}", module_name, short_name);
+
+                    ctx.macros.insert(short_name.clone(), macro_def.clone());
+                    ctx.qualified_macros
+                        .insert(qualified_name, macro_def.clone());
+                    ctx.macro_modules
+                        .insert(short_name, module_name.to_string());
+                }
+            }
+        }
+        ctx
+    }
+
+    /// Extract imports from a use statement
+    fn extract_imports_from_use(imports: &mut HashMap<String, String>, use_stmt: &UseStatement) {
+        // Join the module path components with dots (e.g., ["std", "util", "strings"] -> "std.util.strings")
+        let module_path = use_stmt.module_path.join(".");
+        for symbol in &use_stmt.symbols {
+            imports.insert(symbol.clone(), module_path.clone());
+        }
     }
 
     /// Get a macro definition by name
@@ -86,7 +141,15 @@ impl MacroExpansionContext {
             };
         }
 
-        let Some(macro_def) = self.macros.get(name) else {
+        // Try to find the macro - first by qualified name, then by short name
+        let (macro_def, macro_source_module) = if let Some(def) = self.qualified_macros.get(name) {
+            // Extract module from qualified name
+            let module = name.rfind('.').map(|i| &name[..i]).unwrap_or("");
+            (def.clone(), Some(module.to_string()))
+        } else if let Some(def) = self.macros.get(name) {
+            let module = self.macro_modules.get(name).cloned();
+            (def.clone(), module)
+        } else {
             return MacroExpansionResult::NotFound;
         };
 
@@ -118,7 +181,15 @@ impl MacroExpansionContext {
         }
 
         // Execute the macro in a sandboxed interpreter, passing all macros for nested calls
-        match execute_macro(macro_def, &arg_values, &self.macros) {
+        match execute_macro(
+            &macro_def,
+            &arg_values,
+            &self.macros,
+            &self.qualified_macros,
+            &self.macro_modules,
+            &self.module_imports,
+            macro_source_module.as_deref(),
+        ) {
             Ok(code) => {
                 // Check if the expanded code contains nested top-level macro calls
                 self.expand_nested_macros(&code, depth)
@@ -263,6 +334,10 @@ fn execute_macro(
     macro_def: &MacroDef,
     args: &[Value],
     all_macros: &HashMap<String, MacroDef>,
+    qualified_macros: &HashMap<String, MacroDef>,
+    macro_modules: &HashMap<String, String>,
+    module_imports: &HashMap<String, HashMap<String, String>>,
+    macro_source_module: Option<&str>,
 ) -> NexusResult<String> {
     // Create a minimal interpreter for macro execution
     let config = InterpreterConfig {
@@ -273,21 +348,42 @@ fn execute_macro(
 
     let mut interpreter = Interpreter::with_config(config);
 
-    // Register all available macros so nested macro calls can be resolved
-    // The key insight: macros in the context are stored by short name (e.g., "t", "define_map")
-    // but the interpreter looks up macros with qualified names (current_module + name)
-    // Since we don't have module context here, we register with empty module prefix
-    // so ".macro_name" matches when current_module is ""
+    // Set the current module to the macro's source module if known
+    if let Some(module) = macro_source_module {
+        interpreter.set_current_module(module);
+    }
+
+    // Register all modules as known
+    for module_name in module_imports.keys() {
+        let _ = interpreter.register_module(module_name);
+    }
+    for module_name in macro_modules.values() {
+        let _ = interpreter.register_module(module_name);
+    }
+
+    // Register all macros with their qualified names
+    for (qualified_name, def) in qualified_macros {
+        interpreter.register_macro_direct(qualified_name, def.clone());
+    }
+
+    // Also register macros by short name for backward compatibility
     for (name, def) in all_macros {
-        // Register macro with empty-prefixed qualified name for lookup
+        // Register with empty prefix for fallback
         let qualified = format!(".{}", name);
         interpreter.register_macro_direct(&qualified, def.clone());
-        // Also register the short name directly
         interpreter.register_macro_direct(name, def.clone());
-        // And register the macro's actual name from the def
-        interpreter.register_macro_direct(&def.name, def.clone());
-        let qualified_def_name = format!(".{}", def.name);
-        interpreter.register_macro_direct(&qualified_def_name, def.clone());
+    }
+
+    // Register module imports so nested macro calls can resolve their dependencies
+    // We need to use the interpreter's internal method to set up module_imported_symbols
+    // Since we can't directly access it, we'll process use statements through the interpreter
+    for (module_name, imports) in module_imports {
+        // Register each module's imports
+        for (symbol, source_module) in imports {
+            // Register the imported macro/function with the interpreter
+            // The interpreter tracks this via module_imported_symbols
+            interpreter.register_import(module_name, symbol, source_module);
+        }
     }
 
     // Create a scope with the macro parameters bound to the argument values

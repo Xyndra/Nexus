@@ -462,6 +462,21 @@ impl<'a> TypeChecker<'a> {
             });
         }
 
+        // Check for empty array without type annotation
+        if decl.ty.is_none() {
+            if let Expression::Array(arr) = &decl.init {
+                if arr.elements.is_empty() {
+                    return Err(NexusError::TypeError {
+                        message: format!(
+                            "Cannot infer type of empty array. Add a type annotation to variable '{}', e.g.: m {}: [dyn]YourType = []",
+                            decl.name, decl.name
+                        ),
+                        span: arr.span,
+                    });
+                }
+            }
+        }
+
         // Infer or check type
         let var_type = if let Some(ty_expr) = &decl.ty {
             self.resolve_type_expr(ty_expr)

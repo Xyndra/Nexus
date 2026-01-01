@@ -166,7 +166,6 @@ impl<'a> CCodeGenerator<'a> {
     pub fn register_all_modules(
         &mut self,
         all_module_info: &[(String, &Program)],
-        all_programs: &[&Program],
     ) -> NexusResult<()> {
         // Initialize interpreter for macro expansion (use first program)
         if let Some((_, first_program)) = all_module_info.first() {
@@ -176,9 +175,12 @@ impl<'a> CCodeGenerator<'a> {
             }
         }
 
-        // Initialize macro context with all programs (for cross-module macro support)
-        self.macro_context = Some(MacroExpansionContext::from_programs(
-            all_programs.iter().copied(),
+        // Initialize macro context with all programs and module names (for cross-module macro support)
+        // This allows proper import resolution during macro expansion
+        self.macro_context = Some(MacroExpansionContext::from_programs_with_modules(
+            all_module_info
+                .iter()
+                .map(|(name, prog)| (name.as_str(), *prog)),
         ));
 
         // Collect all items from all modules, including macro-expanded ones
@@ -1242,7 +1244,7 @@ int main(int argc, char** argv) {{
                 Ok(format!("nx_array_pop(&({}))", array))
             }
 
-            // String operations
+            // String/Array operations
             "concat" => {
                 if args.len() != 2 {
                     return Err(NexusError::TranspileError {
@@ -1251,22 +1253,63 @@ int main(int argc, char** argv) {{
                 }
                 let left = self.generate_expression(&args[0])?;
                 let right = self.generate_expression(&args[1])?;
-                let _left_type = self.infer_c_type_from_expr(&args[0])?;
-                let _right_type = self.infer_c_type_from_expr(&args[1])?;
+                let left_type = self.infer_c_type_from_expr(&args[0])?;
+                let right_type = self.infer_c_type_from_expr(&args[1])?;
 
-                // Create temp variables for both strings to ensure they have stable addresses
-                let left_temp = format!("_concat_l_{}", self.temp_var_counter);
+                // Check if we're concatenating arrays or strings
+                if left_type == "nx_array" || right_type == "nx_array" {
+                    // Array concatenation
+                    let left_temp = format!("_concat_l_{}", self.temp_var_counter);
+                    self.temp_var_counter += 1;
+                    let right_temp = format!("_concat_r_{}", self.temp_var_counter);
+                    self.temp_var_counter += 1;
+
+                    self.statement_prelude
+                        .push(format!("nx_array {} = {}", left_temp, left));
+                    self.statement_prelude
+                        .push(format!("nx_array {} = {}", right_temp, right));
+
+                    Ok(format!("nx_array_concat(&{}, &{})", left_temp, right_temp))
+                } else {
+                    // String concatenation
+                    let left_temp = format!("_concat_l_{}", self.temp_var_counter);
+                    self.temp_var_counter += 1;
+                    let right_temp = format!("_concat_r_{}", self.temp_var_counter);
+                    self.temp_var_counter += 1;
+
+                    self.statement_prelude
+                        .push(format!("nx_string {} = {}", left_temp, left));
+                    self.statement_prelude
+                        .push(format!("nx_string {} = {}", right_temp, right));
+
+                    Ok(format!("nx_string_concat(&{}, &{})", left_temp, right_temp))
+                }
+            }
+            "slice" => {
+                if args.len() != 3 {
+                    return Err(NexusError::TranspileError {
+                        message: "slice expects 3 arguments".to_string(),
+                    });
+                }
+                let collection = self.generate_expression(&args[0])?;
+                let start = self.generate_expression(&args[1])?;
+                let end = self.generate_expression(&args[2])?;
+                let collection_type = self.infer_c_type_from_expr(&args[0])?;
+
+                // Create temp variable for collection to ensure stable address
+                let temp = format!("_slice_arr_{}", self.temp_var_counter);
                 self.temp_var_counter += 1;
-                let right_temp = format!("_concat_r_{}", self.temp_var_counter);
-                self.temp_var_counter += 1;
 
-                // Add temp variable declarations to prelude (no semicolon, added when emitting)
-                self.statement_prelude
-                    .push(format!("nx_string {} = {}", left_temp, left));
-                self.statement_prelude
-                    .push(format!("nx_string {} = {}", right_temp, right));
-
-                Ok(format!("nx_string_concat(&{}, &{})", left_temp, right_temp))
+                if collection_type == "nx_array" {
+                    self.statement_prelude
+                        .push(format!("nx_array {} = {}", temp, collection));
+                    Ok(format!("nx_array_slice(&{}, {}, {})", temp, start, end))
+                } else {
+                    // String slicing - would need nx_string_slice, for now error
+                    return Err(NexusError::TranspileError {
+                        message: "slice on strings not yet implemented in C transpiler".to_string(),
+                    });
+                }
             }
             "str" => {
                 if args.len() != 1 {
@@ -1895,9 +1938,29 @@ int main(int argc, char** argv) {{
             Expression::Call(call) => {
                 // Infer return type based on known functions
                 match call.function.as_str() {
+                    // concat and slice return type depends on argument type
+                    "concat" => {
+                        // Check first argument type to determine return type
+                        if let Some(first_arg) = call.args.first() {
+                            let arg_type = self.infer_c_type_from_expr(first_arg)?;
+                            if arg_type == "nx_array" {
+                                return Ok("nx_array".to_string());
+                            }
+                        }
+                        Ok("nx_string".to_string())
+                    }
+                    "slice" => {
+                        // Check first argument type to determine return type
+                        if let Some(first_arg) = call.args.first() {
+                            let arg_type = self.infer_c_type_from_expr(first_arg)?;
+                            if arg_type == "nx_array" {
+                                return Ok("nx_array".to_string());
+                            }
+                        }
+                        Ok("nx_string".to_string())
+                    }
                     // String-returning builtins
-                    "concat"
-                    | "str"
+                    "str"
                     | "trim"
                     | "join"
                     | "nx_string_concat"

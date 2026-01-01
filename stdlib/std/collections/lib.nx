@@ -15,7 +15,7 @@ std sort_i64([dyn]i64 arr): [dyn]i64 {
     }
 
     // Copy array to avoid mutating original
-    m result = []
+    m result: [dyn]i64 = []
     m i: i64 = 0
     subscope copy {
         if (gei64(i, n)) {
@@ -77,7 +77,7 @@ std partition_i64(m [dyn]i64 arr, i64 low, i64 high): i64 {
 
 // Remove duplicate i64 values from array (preserves order of first occurrence)
 std unique_i64([dyn]i64 arr): [dyn]i64 {
-    m result = []
+    m result: [dyn]i64 = []
     c n = len(arr)
 
     m i: i64 = 0
@@ -212,7 +212,7 @@ std sum_i64([dyn]i64 arr): i64 {
 // Reverse an i64 array (returns new array)
 std reverse_i64([dyn]i64 arr): [dyn]i64 {
     c n = len(arr)
-    m result = []
+    m result: [dyn]i64 = []
 
     m i = subi64(n, 1)
     subscope rev_loop {

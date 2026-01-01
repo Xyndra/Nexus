@@ -100,3 +100,51 @@ nx_array nx_array_from_literal(const void* data, size_t len, size_t elem_size) {
     #endif
     return arr;
 }
+
+// Concatenate two arrays into a new array
+nx_array nx_array_concat(nx_array* a, nx_array* b) {
+    size_t elem_size = a->elem_size > 0 ? a->elem_size : b->elem_size;
+    size_t total_len = a->len + b->len;
+    nx_array result = nx_array_with_capacity(elem_size, total_len);
+    result.len = total_len;
+    result.elem_size = elem_size;
+    
+    if (a->len > 0) {
+        #ifdef _WIN32
+            memcpy_s(result.data, a->len * elem_size, a->data, a->len * elem_size);
+        #else
+            memcpy(result.data, a->data, a->len * elem_size);
+        #endif
+    }
+    if (b->len > 0) {
+        #ifdef _WIN32
+            memcpy_s((char*)result.data + (a->len * elem_size), b->len * elem_size, b->data, b->len * elem_size);
+        #else
+            memcpy((char*)result.data + (a->len * elem_size), b->data, b->len * elem_size);
+        #endif
+    }
+    return result;
+}
+
+// Slice an array from start to end (exclusive) into a new array
+nx_array nx_array_slice(nx_array* arr, size_t start, size_t end) {
+    // Clamp indices to valid range
+    if (start > arr->len) start = arr->len;
+    if (end > arr->len) end = arr->len;
+    if (start > end) start = end;
+    
+    size_t slice_len = end - start;
+    nx_array result = nx_array_with_capacity(arr->elem_size, slice_len);
+    result.len = slice_len;
+    result.elem_size = arr->elem_size;
+    
+    if (slice_len > 0) {
+        #ifdef _WIN32
+            memcpy_s(result.data, slice_len * arr->elem_size, 
+                     (char*)arr->data + (start * arr->elem_size), slice_len * arr->elem_size);
+        #else
+            memcpy(result.data, (char*)arr->data + (start * arr->elem_size), slice_len * arr->elem_size);
+        #endif
+    }
+    return result;
+}

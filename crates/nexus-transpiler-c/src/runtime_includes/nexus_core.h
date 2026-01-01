@@ -105,6 +105,12 @@ void nx_array_free(nx_array* arr);
 // Create array from literal data (makes a copy)
 nx_array nx_array_from_literal(const void* data, size_t len, size_t elem_size);
 
+// Concatenate two arrays into a new array
+nx_array nx_array_concat(nx_array* a, nx_array* b);
+
+// Slice an array from start to end (exclusive) into a new array
+nx_array nx_array_slice(nx_array* arr, size_t start, size_t end);
+
 // ============================================================================
 // Strings (arrays of runes/chars)
 // ============================================================================

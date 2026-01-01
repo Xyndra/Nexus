@@ -138,6 +138,16 @@ impl NexusType {
             // Same types are always assignable
             (a, b) if a == b => true,
 
+            // Named types with same name are assignable
+            (NexusType::Named(a), NexusType::Named(b)) => a == b,
+
+            // Named type is assignable to Struct if names match
+            (NexusType::Named(name), NexusType::Struct(s)) => name == &s.name,
+            (NexusType::Struct(s), NexusType::Named(name)) => &s.name == name,
+
+            // Struct types with same name are assignable (handles Arc comparison issues)
+            (NexusType::Struct(a), NexusType::Struct(b)) => a.name == b.name,
+
             // Primitives must match exactly
             (NexusType::Primitive(a), NexusType::Primitive(b)) => a == b,
 

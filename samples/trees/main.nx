@@ -1,0 +1,39 @@
+use { println } from compat.io
+use { format } from std.util.strings
+
+struct Node {
+    i64 value
+    i64 parent
+    [dyn]i64 children
+}
+
+compat main(): void {
+    m nodes: [dyn]Node = []
+    nodes = push(nodes, Node{value: 1, parent: subi64(0, 1), children: [1,2]})
+    nodes = push(nodes, Node{value: 2, parent: 0, children: [3,4]})
+    nodes = push(nodes, Node{value: 5, parent: 0, children: []})
+    nodes = push(nodes, Node{value: 1, parent: 1, children: []})
+    nodes = push(nodes, Node{value: 1, parent: 1, children: []})
+    m cur = 0
+    subscope loop_nodes {
+        if (eqi64(cur, len(nodes))) {
+            exit loop_nodes
+        }
+        m node = nodes[cur]
+        m total = node.value
+        m todo = node.children
+        subscope loop_children {
+            if (eqi64(len(todo), 0)) {
+                exit loop_children
+            }
+            m child = nodes[todo[0]]
+            total = addi64(total, child.value)
+            todo = slice(todo, 1, len(todo))
+            todo = concat(todo, child.children)
+            goto loop_children
+        }
+        println($format("Total value of node ${addi64(cur, 1)}: ${total}"))
+        cur = addi64(cur, 1)
+        goto loop_nodes
+    }
+}

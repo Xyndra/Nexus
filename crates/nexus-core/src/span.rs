@@ -87,6 +87,85 @@ impl Span {
     pub fn overlaps(&self, other: &Span) -> bool {
         self.start < other.end && other.start < self.end
     }
+
+    /// Return the byte start and end indices of the line containing this span's start.
+    ///
+    /// The returned bounds are [start, end) (end is exclusive) and will never include a trailing
+    /// newline character. Returns `None` if the source is empty.
+    pub fn line_bounds(&self, source: &str) -> Option<(usize, usize)> {
+        if source.is_empty() {
+            return None;
+        }
+
+        // Clamp the span start to the source length to avoid out-of-bounds.
+        let start = self.start.min(source.len());
+
+        // Find the previous newline (if any) before start; line starts after it.
+        let line_start = match source[..start].rfind('\n') {
+            Some(idx) => idx + 1,
+            None => 0,
+        };
+
+        // Find the next newline (if any) after start; line ends at that newline or the end of source.
+        let line_end = match source[start..].find('\n') {
+            Some(idx) => start + idx,
+            None => source.len(),
+        };
+
+        Some((line_start, line_end))
+    }
+
+    /// Return the text of the whole line containing this span's start (without trailing newline).
+    pub fn line_text<'a>(&self, source: &'a str) -> Option<&'a str> {
+        self.line_bounds(source)
+            .map(|(s, e)| source[s..e].trim_end_matches('\r'))
+    }
+
+    /// Build a marker line (spaces + carets) that highlights this span within its source line.
+    ///
+    /// The marker aligns roughly with character positions in the line; it clamps the span to the
+    /// containing line if the span extends across lines.
+    pub fn marker(&self, source: &str) -> Option<String> {
+        let (line_start, line_end) = self.line_bounds(source)?;
+        // Clamp absolute span to the line bounds.
+        let sabs = self.start.max(line_start).min(line_end);
+        let eabs = self.end.max(sabs).min(line_end);
+
+        let line = &source[line_start..line_end];
+
+        // Compute character offsets within the line for start and end.
+        let start_char_idx = line[..(sabs - line_start)].chars().count();
+        let end_char_idx = line[..(eabs - line_start)].chars().count();
+
+        let mut width = end_char_idx.saturating_sub(start_char_idx);
+        if width == 0 {
+            // Ensure at least one caret for empty spans (e.g. insertion points).
+            width = 1;
+        }
+
+        let mut marker = String::new();
+        marker.push_str(&" ".repeat(start_char_idx));
+        marker.push_str(&"^".repeat(width));
+        Some(marker)
+    }
+
+    /// Format a short snippet showing the file/line/column and a caret marker under the line.
+    ///
+    /// Example output:
+    ///
+    ///   m x = foo + 1
+    ///         ^^^
+    ///
+    /// This is intended to be used by CLI error reporting code that has access to the source
+    /// text and optionally the filename.
+    pub fn format_snippet(&self, source: &str) -> Option<String> {
+        let line = self.line_text(source)?;
+        let marker = self.marker(source)?;
+        let mut buf = String::new();
+
+        buf.push_str(&format!("{}\n{}\n", line, marker));
+        Some(buf)
+    }
 }
 
 impl Default for Span {
@@ -180,5 +259,48 @@ mod tests {
         assert!(span1.overlaps(&span2));
         assert!(!span1.overlaps(&span3));
         assert!(span2.overlaps(&span3));
+    }
+
+    #[test]
+    fn test_line_text_and_marker() {
+        let src = "first line\n  foo bar\nthird line\n";
+        let start = src.find("foo").unwrap();
+        let end = start + "foo".len();
+        let span = Span::new(start, end, 2, 3);
+
+        // The full line containing "foo"
+        assert_eq!(span.line_text(src).unwrap(), "  foo bar");
+
+        // The marker should have two leading spaces (for the two spaces before "foo")
+        // followed by three carets for "foo".
+        assert_eq!(span.marker(src).unwrap(), "  ^^^");
+
+        let snippet = span.format_snippet(src).unwrap();
+        assert!(snippet.contains("  foo bar"));
+        assert!(snippet.contains("^^^"));
+    }
+
+    #[test]
+    fn test_zero_length_span_marker() {
+        let src = "a\nb\n";
+        let pos = src.find('b').unwrap();
+        let span = Span::new(pos, pos, 2, 1);
+        let marker = span.marker(src).unwrap();
+        // Zero-length span should still render a single caret.
+        assert_eq!(marker, "^");
+    }
+
+    #[test]
+    fn test_multibyte_characters() {
+        // Ensure that character-counting (not byte counting) is used for marker alignment.
+        let src = "λλλ\n  λλ abc\n";
+        let pos = src.find("abc").unwrap();
+        let span = Span::new(pos, pos + 3, 2, 6);
+        let line = span.line_text(src).unwrap();
+        assert_eq!(line, "  λλ abc");
+
+        let marker = span.marker(src).unwrap();
+        // Marker should end with three carets for "abc".
+        assert!(marker.ends_with("^^^"));
     }
 }
