@@ -1,0 +1,146 @@
+use { println } from compat.io
+use { format } from std.util.strings
+
+// Define an interface for things that have a value
+interface Valuable {
+    getValue(): i64
+}
+
+// Define an interface for things that can describe themselves
+interface Describable {
+    describe(): str
+}
+
+// A simple node that holds a value
+struct SimpleNode {
+    i64 value
+    str name
+}
+
+// Implement Valuable for SimpleNode
+impl SimpleNode : Valuable {
+    std getValue(): i64 {
+        return self.value
+    }
+}
+
+// Implement Describable for SimpleNode
+impl SimpleNode : Describable {
+    std describe(): str {
+        return $format("SimpleNode '${self.name}' with value ${self.value}")
+    }
+}
+
+// A multiplier node that multiplies its base value
+struct MultiplierNode {
+    i64 baseValue
+    i64 multiplier
+}
+
+// Implement Valuable for MultiplierNode
+impl MultiplierNode : Valuable {
+    std getValue(): i64 {
+        return muli64(self.baseValue, self.multiplier)
+    }
+}
+
+// Implement Describable for MultiplierNode
+impl MultiplierNode : Describable {
+    std describe(): str {
+        return $format("MultiplierNode: ${self.baseValue} * ${self.multiplier} = ${muli64(self.baseValue, self.multiplier)}")
+    }
+}
+
+// A function that works with SimpleNode
+compat printValue(SimpleNode node): void {
+    println($format("Value: ${node.getValue()}"))
+}
+
+// A function that works with SimpleNode
+compat printDescription(SimpleNode node): void {
+    println(node.describe())
+}
+
+// Overloaded version for MultiplierNode
+compat printValueMult(MultiplierNode node): void {
+    println($format("Value: ${node.getValue()}"))
+}
+
+compat printDescriptionMult(MultiplierNode node): void {
+    println(node.describe())
+}
+
+compat main(): void {
+    println("=== Interface Demo ===")
+    println("")
+
+    // Create a SimpleNode
+    c simple = SimpleNode { value: 42, name: "Answer" }
+    println("Created SimpleNode:")
+    printDescription(simple)
+    printValue(simple)
+    println("")
+
+    // Create a MultiplierNode
+    c mult = MultiplierNode { baseValue: 7, multiplier: 6 }
+    println("Created MultiplierNode:")
+    printDescriptionMult(mult)
+    printValueMult(mult)
+    println("")
+
+    // Direct method calls
+    println("Direct method calls:")
+    println($format("simple.getValue() = ${simple.getValue()}"))
+    println($format("mult.getValue() = ${mult.getValue()}"))
+    println("")
+
+    // Create an array of SimpleNodes and sum their values
+    m nodes: [dyn]SimpleNode = []
+    nodes = push(nodes, SimpleNode { value: 10, name: "Ten" })
+    nodes = push(nodes, SimpleNode { value: 20, name: "Twenty" })
+    nodes = push(nodes, SimpleNode { value: 30, name: "Thirty" })
+
+    println("Array of SimpleNodes:")
+    m total: i64 = 0
+    m i: i64 = 0
+    subscope sum_loop {
+        if (gei64(i, len(nodes))) {
+            exit sum_loop
+        }
+        c node = nodes[i]
+        println(node.describe())
+        total = addi64(total, node.getValue())
+        i = addi64(i, 1)
+        goto sum_loop
+    }
+    println($format("Total value: ${total}"))
+
+    println("")
+    println("Heterogeneous array using Valuable interface:")
+
+    // Create an interface-typed array that can hold both SimpleNode and MultiplierNode
+    m allValuables: [dyn]Valuable = []
+    allValuables = push(allValuables, SimpleNode { value: 100, name: "Hundred" })
+    allValuables = push(allValuables, MultiplierNode { baseValue: 5, multiplier: 10 })
+    allValuables = push(allValuables, SimpleNode { value: 25, name: "Quarter" })
+    allValuables = push(allValuables, MultiplierNode { baseValue: 3, multiplier: 7 })
+
+    println($format("Items in heterogeneous array: ${len(allValuables)}"))
+
+    // Sum values from the heterogeneous array using interface method
+    m heteroTotal: i64 = 0
+    m j: i64 = 0
+    subscope hetero_loop {
+        if (gei64(j, len(allValuables))) {
+            exit hetero_loop
+        }
+        c item = allValuables[j]
+        heteroTotal = addi64(heteroTotal, item.getValue())
+        j = addi64(j, 1)
+        goto hetero_loop
+    }
+    println($format("Heterogeneous total: ${heteroTotal}"))
+
+    println("")
+    println("=== Interface Demo Complete ===")
+}

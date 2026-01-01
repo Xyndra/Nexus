@@ -278,6 +278,28 @@ impl<'a> TypeChecker<'a> {
                         return_type,
                         _color: method.color,
                     });
+            } else if let Item::Impl(impl_block) = item {
+                // Register methods from impl blocks
+                for impl_method in &impl_block.methods {
+                    let param_types = impl_method
+                        .params
+                        .iter()
+                        .map(|p| self.resolve_type_expr(&p.ty))
+                        .collect();
+
+                    let return_type = self.resolve_type_expr(&impl_method.return_type);
+
+                    self.methods
+                        .entry(impl_method.name.clone())
+                        .or_default()
+                        .push(MethodSignature {
+                            receiver_type: impl_block.struct_name.clone(),
+                            _receiver_mutable: impl_method.mutable_self,
+                            params: param_types,
+                            return_type,
+                            _color: impl_method.color,
+                        });
+                }
             }
         }
 
@@ -298,11 +320,6 @@ impl<'a> TypeChecker<'a> {
                         struct_def.add_field(field);
                     }
 
-                    // Add interface implementations
-                    for impl_name in &s.implements {
-                        struct_def.add_impl(impl_name.clone());
-                    }
-
                     self.type_registry.register_struct(struct_def);
                 }
                 Item::Interface(i) => {
@@ -313,8 +330,7 @@ impl<'a> TypeChecker<'a> {
                             m.name.clone(),
                             self.resolve_type_expr(&m.return_type),
                             m.span,
-                        )
-                        .with_color(m.color);
+                        );
 
                         if m.receiver_mutable {
                             method = method.with_mutable_receiver();
@@ -338,6 +354,20 @@ impl<'a> TypeChecker<'a> {
 
                     self.type_registry.register_interface(interface_def);
                 }
+                Item::Impl(impl_block) => {
+                    // Register interface implementation for the struct
+                    if let Some(ref interface_name) = impl_block.interface_name {
+                        if let Some(struct_def) =
+                            self.type_registry.get_struct(&impl_block.struct_name)
+                        {
+                            let mut updated_struct = (*struct_def).clone();
+                            if !updated_struct.implements.contains(interface_name) {
+                                updated_struct.implements.push(interface_name.clone());
+                            }
+                            self.type_registry.register_struct(updated_struct);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -359,6 +389,26 @@ impl<'a> TypeChecker<'a> {
             match item {
                 Item::Function(func) => self.check_function(func)?,
                 Item::Method(method) => self.check_method(method)?,
+                Item::Impl(impl_block) => {
+                    // Check each method in the impl block
+                    for impl_method in &impl_block.methods {
+                        // Convert to MethodDef for checking
+                        let method = nexus_parser::MethodDef {
+                            color: impl_method.color,
+                            receiver_mutable: impl_method.mutable_self,
+                            receiver_type: impl_block.struct_name.clone(),
+                            receiver_name: "self".to_string(),
+                            name: impl_method.name.clone(),
+                            name_span: impl_method.span,
+                            params: impl_method.params.clone(),
+                            return_type: impl_method.return_type.clone(),
+                            return_contracts: impl_method.return_contracts.clone(),
+                            body: impl_method.body.clone(),
+                            span: impl_method.span,
+                        };
+                        self.check_method(&method)?;
+                    }
+                }
                 _ => {}
             }
         }
@@ -799,7 +849,56 @@ impl<'a> TypeChecker<'a> {
 
         let receiver_type = self.check_expression(&call.receiver)?;
 
-        // Find matching method
+        // Resolve the receiver type to check if it's an interface
+        let resolved_receiver = self.type_registry.resolve_type(&receiver_type.ty);
+
+        // If receiver is an interface type, look up the method in the interface
+        if let NexusType::Interface(ref interface_def) = resolved_receiver {
+            if let Some(interface_method) = interface_def.get_method(&call.method) {
+                // Check argument count
+                if call.args.len() != interface_method.params.len() {
+                    return Err(NexusError::TypeError {
+                        message: format!(
+                            "Method '{}' expects {} arguments, got {}",
+                            call.method,
+                            interface_method.params.len(),
+                            call.args.len()
+                        ),
+                        span: call.span,
+                    });
+                }
+
+                // Check argument types
+                for (i, arg) in call.args.iter().enumerate() {
+                    let expected_type = &interface_method.params[i].ty;
+                    let arg_type = self.check_expression(arg)?;
+                    if !arg_type.ty.is_assignable_to(expected_type) {
+                        return Err(NexusError::TypeError {
+                            message: format!(
+                                "Argument {} to method '{}': expected type '{}', got '{}'",
+                                i + 1,
+                                call.method,
+                                expected_type,
+                                arg_type.ty
+                            ),
+                            span: call.span,
+                        });
+                    }
+                }
+
+                return Ok(interface_method.return_type.clone());
+            } else {
+                return Err(NexusError::TypeError {
+                    message: format!(
+                        "Interface '{}' has no method '{}'",
+                        interface_def.name, call.method
+                    ),
+                    span: call.span,
+                });
+            }
+        }
+
+        // Find matching method for concrete types
         let methods = self
             .methods
             .get(&call.method)

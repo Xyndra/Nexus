@@ -1,39 +1,145 @@
 use { println } from compat.io
 use { format } from std.util.strings
 
+// Interface for any node in the tree
+interface TreeNode {
+    getValue(): i64
+    getChildren(): [dyn]i64
+}
+
+// Interface for types that can describe themselves
+interface Serializable {
+    describe(): str
+}
+
+// Regular node with a value and children
 struct Node {
     i64 value
     i64 parent
     [dyn]i64 children
 }
 
+// Implement TreeNode interface for Node
+impl Node : TreeNode {
+    std getValue(): i64 {
+        return self.value
+    }
+
+    std getChildren(): [dyn]i64 {
+        return self.children
+    }
+}
+
+// Implement Serializable interface for Node
+impl Node : Serializable {
+    std describe(): str {
+        return $format("Node(value=${self.value})")
+    }
+}
+
+// A link node that references another node and adds a bonus value
+// This demonstrates another struct implementing the same interface
+struct LinkNode {
+    i64 linkedIndex
+    i64 bonusValue
+    i64 parent
+}
+
+// Implement TreeNode for LinkNode
+impl LinkNode : TreeNode {
+    // LinkNode's getValue returns the bonus value
+    std getValue(): i64 {
+        return self.bonusValue
+    }
+
+    // LinkNode has no children of its own
+    std getChildren(): [dyn]i64 {
+        m empty: [dyn]i64 = []
+        return empty
+    }
+}
+
+// Implement Serializable interface for LinkNode
+impl LinkNode : Serializable {
+    std describe(): str {
+        return $format("LinkNode(linked=${self.linkedIndex}, bonus=${self.bonusValue})")
+    }
+}
+
 compat main(): void {
+    println("=== Tree with Interfaces Demo ===")
+    println("")
+
+    // Create an array of regular nodes (concrete type for tree traversal)
     m nodes: [dyn]Node = []
     nodes = push(nodes, Node{value: 1, parent: subi64(0, 1), children: [1,2]})
     nodes = push(nodes, Node{value: 2, parent: 0, children: [3,4]})
     nodes = push(nodes, Node{value: 5, parent: 0, children: []})
     nodes = push(nodes, Node{value: 1, parent: 1, children: []})
     nodes = push(nodes, Node{value: 1, parent: 1, children: []})
+
+    println("Regular Nodes:")
     m cur = 0
     subscope loop_nodes {
         if (eqi64(cur, len(nodes))) {
             exit loop_nodes
         }
         m node = nodes[cur]
-        m total = node.value
-        m todo = node.children
+        m total = node.getValue()
+        m todo = node.getChildren()
         subscope loop_children {
             if (eqi64(len(todo), 0)) {
                 exit loop_children
             }
             m child = nodes[todo[0]]
-            total = addi64(total, child.value)
+            total = addi64(total, child.getValue())
             todo = slice(todo, 1, len(todo))
-            todo = concat(todo, child.children)
+            todo = concat(todo, child.getChildren())
             goto loop_children
         }
         println($format("Total value of node ${addi64(cur, 1)}: ${total}"))
         cur = addi64(cur, 1)
         goto loop_nodes
     }
+
+    println("")
+    println("Combined array of TreeNode (Node and LinkNode together):")
+
+    // Create a combined array using the TreeNode interface type
+    // This allows both Node and LinkNode to be stored in the same array
+    m allNodes: [dyn]TreeNode = []
+
+    // Add all regular nodes to the interface-typed array
+    m ai = 0
+    subscope add_nodes {
+        if (gei64(ai, len(nodes))) {
+            exit add_nodes
+        }
+        allNodes = push(allNodes, nodes[ai])
+        ai = addi64(ai, 1)
+        goto add_nodes
+    }
+
+    // Add link nodes directly to the combined array
+    allNodes = push(allNodes, LinkNode{linkedIndex: 0, bonusValue: 100, parent: subi64(0, 1)})
+    allNodes = push(allNodes, LinkNode{linkedIndex: 2, bonusValue: 50, parent: subi64(0, 1)})
+
+    println($format("Total items in combined array: ${len(allNodes)}"))
+
+    // Sum all values using the interface method - works for both Node and LinkNode
+    m grandTotal: i64 = 0
+    m ni = 0
+    subscope sum_all {
+        if (gei64(ni, len(allNodes))) {
+            exit sum_all
+        }
+        c item = allNodes[ni]
+        grandTotal = addi64(grandTotal, item.getValue())
+        ni = addi64(ni, 1)
+        goto sum_all
+    }
+
+    println($format("Grand total from combined array: ${grandTotal}"))
+    println("")
+    println("=== Demo Complete ===")
 }

@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_document_symbols_interfaces() {
-        let content = "interface Drawable {\nstd draw(): void\n}";
+        let content = "interface Drawable {\ndraw(): void\n}";
         let ast = parse_content(content);
         assert!(ast.is_some(), "Failed to parse interface content");
         let ast = ast.unwrap();

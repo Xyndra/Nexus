@@ -1,5 +1,14 @@
+=== Tree with Interfaces Demo ===
+
+Regular Nodes:
 Total value of node 1: 10
 Total value of node 2: 4
 Total value of node 3: 5
 Total value of node 4: 1
 Total value of node 5: 1
+
+Combined array of TreeNode (Node and LinkNode together):
+Total items in combined array: 7
+Grand total from combined array: 160
+
+=== Demo Complete ===

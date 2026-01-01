@@ -40,12 +40,15 @@ pub fn generate_runtime(config: &TranspilerConfig) -> String {
 {}
 
 {}
+
+{}
 "#,
         include_str!("runtime_includes/memory.c"),
         include_str!("runtime_includes/array.c"),
         include_str!("runtime_includes/string.c"),
         include_str!("runtime_includes/unknown.c"),
         error_handling,
+        include_str!("runtime_includes/interface.c"),
         include_str!("runtime_includes/compat_io.c"),
         include_str!("runtime_includes/compat_time.c"),
         include_str!("runtime_includes/compat_process.c"),

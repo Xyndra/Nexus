@@ -27,11 +27,13 @@ typedef enum {
     NX_TYPE_STRING,
     NX_TYPE_ARRAY,
     NX_TYPE_UNKNOWN,
+    NX_TYPE_INTERFACE,
 } nx_type_tag;
 
 // Forward declarations for structs
 typedef struct nx_array nx_array;
 typedef struct nx_string nx_string;
+typedef struct nx_interface_value nx_interface_value;
 
 // ============================================================================
 // Tagged Value Type
@@ -50,8 +52,43 @@ typedef struct {
         nx_string* as_string;
         nx_array* as_array;
         void* as_ptr;
+        nx_interface_value* as_interface;
     } data;
 } nx_value;
+
+// ============================================================================
+// Interface Runtime Support (Dynamic Dispatch via VTables)
+// ============================================================================
+
+// Base vtable structure - all interface vtables start with this
+typedef struct {
+    const char* interface_name;
+    const char* concrete_type_name;
+} nx_vtable_base;
+
+// Interface value wrapper - holds concrete data + vtable pointer
+// This is used when storing interface-typed values (e.g., in [dyn]Interface arrays)
+struct nx_interface_value {
+    void* data;                  // Pointer to heap-allocated concrete struct
+    size_t data_size;            // Size of the concrete struct
+    nx_vtable_base* vtable;      // Pointer to the vtable for this concrete type
+};
+
+// Create a new interface value by wrapping a concrete struct
+// The concrete struct is copied to the heap
+nx_interface_value* nx_interface_wrap(void* concrete_data, size_t data_size, nx_vtable_base* vtable);
+
+// Get the concrete data from an interface value (for field access)
+void* nx_interface_unwrap(nx_interface_value* iface);
+
+// Get the vtable from an interface value
+nx_vtable_base* nx_interface_get_vtable(nx_interface_value* iface);
+
+// Free an interface value (frees the copied data)
+void nx_interface_free(nx_interface_value* iface);
+
+// Create an interface value on the stack (for temporary use)
+nx_interface_value nx_interface_wrap_stack(void* concrete_data, size_t data_size, nx_vtable_base* vtable);
 
 // ============================================================================
 // Memory Management

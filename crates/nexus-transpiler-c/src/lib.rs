@@ -300,10 +300,6 @@ impl CTranspiler {
             struct_def.add_field(field);
         }
 
-        for impl_name in &s.implements {
-            struct_def.add_impl(impl_name.clone());
-        }
-
         typechecker.register_struct(struct_def);
         Ok(())
     }
@@ -322,8 +318,7 @@ impl CTranspiler {
                 m.name.clone(),
                 typechecker.resolve_type_expr(&m.return_type),
                 m.span,
-            )
-            .with_color(m.color);
+            );
 
             if m.receiver_mutable {
                 method = method.with_mutable_receiver();

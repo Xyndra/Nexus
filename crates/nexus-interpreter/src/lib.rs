@@ -205,6 +205,38 @@ impl Interpreter {
                 Item::TopLevelMacroCall(_) => {
                     // Skip top-level macro calls in phase 1 - they'll be expanded in phase 2
                 }
+                Item::Impl(impl_block) => {
+                    // Convert impl block methods to regular method definitions
+                    for impl_method in &impl_block.methods {
+                        let method = MethodDef {
+                            color: impl_method.color,
+                            receiver_mutable: impl_method.mutable_self,
+                            receiver_type: impl_block.struct_name.clone(),
+                            receiver_name: "self".to_string(),
+                            name: impl_method.name.clone(),
+                            name_span: impl_method.span,
+                            params: impl_method.params.clone(),
+                            return_type: impl_method.return_type.clone(),
+                            return_contracts: impl_method.return_contracts.clone(),
+                            body: impl_method.body.clone(),
+                            span: impl_method.span,
+                        };
+                        let key = format!("{}.{}", impl_block.struct_name, impl_method.name);
+                        self.methods.insert(key, method);
+                    }
+                    // If implementing an interface, register that relationship
+                    if let Some(ref interface_name) = impl_block.interface_name {
+                        if let Some(struct_def) =
+                            self.type_registry.get_struct(&impl_block.struct_name)
+                        {
+                            let mut updated_struct = (*struct_def).clone();
+                            if !updated_struct.implements.contains(interface_name) {
+                                updated_struct.implements.push(interface_name.clone());
+                            }
+                            self.type_registry.register_struct(updated_struct);
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -362,6 +394,26 @@ impl Interpreter {
                 Item::Interface(interface_def) => {
                     self.register_interface(&interface_def)?;
                 }
+                Item::Impl(impl_block) => {
+                    // Convert impl block methods to regular method definitions
+                    for impl_method in &impl_block.methods {
+                        let method = MethodDef {
+                            color: impl_method.color,
+                            receiver_mutable: impl_method.mutable_self,
+                            receiver_type: impl_block.struct_name.clone(),
+                            receiver_name: "self".to_string(),
+                            name: impl_method.name.clone(),
+                            name_span: impl_method.span,
+                            params: impl_method.params.clone(),
+                            return_type: impl_method.return_type.clone(),
+                            return_contracts: impl_method.return_contracts.clone(),
+                            body: impl_method.body.clone(),
+                            span: impl_method.span,
+                        };
+                        let key = format!("{}.{}", impl_block.struct_name, impl_method.name);
+                        self.methods.insert(key, method);
+                    }
+                }
                 Item::Use(_) => {
                     // Use statements in macro expansion are not supported
                     return Err(NexusError::RuntimeError {
@@ -389,6 +441,11 @@ impl Interpreter {
                 }
                 Item::Method(method) => {
                     Self::validate_block(&method.body)?;
+                }
+                Item::Impl(impl_block) => {
+                    for impl_method in &impl_block.methods {
+                        Self::validate_block(&impl_method.body)?;
+                    }
                 }
                 _ => {}
             }
@@ -728,9 +785,6 @@ impl Interpreter {
         self.struct_defs.insert(def.name.clone(), def.clone());
 
         let mut struct_def = StructDef::new(&def.name, def.span);
-        for iface in &def.implements {
-            struct_def.add_impl(iface);
-        }
 
         // Add fields to the struct definition
         for field_def in &def.fields {
@@ -1648,16 +1702,37 @@ impl Interpreter {
 
         let receiver = self.evaluate_expression(&call.receiver, scope)?;
 
-        // Get the receiver's type name
-        let type_name = receiver.type_name();
+        // Get the receiver's actual type name (for structs, use the struct name)
+        let type_name = self.get_value_type_name(&receiver);
         let method_key = format!("{}.{}", type_name, call.method);
 
+        // First, try direct method lookup on the concrete type
         if let Some(method) = self.methods.get(&method_key).cloned() {
             let mut args = vec![receiver];
             for arg in &call.args {
                 args.push(self.evaluate_expression(arg, scope)?);
             }
             return self.call_method(&method, args, call.span);
+        }
+
+        // If not found, check if the type implements any interface with this method
+        if let Value::Struct(ref instance) = receiver {
+            for iface_name in &instance.def.implements {
+                if let Some(interface_def) = self.type_registry.get_interface(iface_name) {
+                    if interface_def.has_method(&call.method) {
+                        // The struct implements an interface that has this method
+                        // Look for the method implementation on the struct
+                        let struct_method_key = format!("{}.{}", instance.def.name, call.method);
+                        if let Some(method) = self.methods.get(&struct_method_key).cloned() {
+                            let mut args = vec![receiver];
+                            for arg in &call.args {
+                                args.push(self.evaluate_expression(arg, scope)?);
+                            }
+                            return self.call_method(&method, args, call.span);
+                        }
+                    }
+                }
+            }
         }
 
         Err(NexusError::UndefinedFunction {
@@ -2137,6 +2212,27 @@ impl Interpreter {
     }
 
     /// Reset step counter (for sandboxing)
+    /// Get the actual type name of a value (for structs, returns the struct name)
+    fn get_value_type_name(&self, value: &Value) -> String {
+        match value {
+            Value::Struct(instance) => instance.def.name.clone(),
+            Value::Void => "void".to_string(),
+            Value::Bool(_) => "bool".to_string(),
+            Value::I32(_) => "i32".to_string(),
+            Value::I64(_) => "i64".to_string(),
+            Value::F32(_) => "f32".to_string(),
+            Value::F64(_) => "f64".to_string(),
+            Value::Rune(_) => "rune".to_string(),
+            Value::String(_) => "[dyn]rune".to_string(),
+            Value::Bytes(_) => "[dyn]u8".to_string(),
+            Value::Array(_) => "[dyn]".to_string(),
+            Value::Lambda(_) => "lambda".to_string(),
+            Value::None => "None".to_string(),
+            Value::Error(_) => "Error".to_string(),
+            Value::Unknown { value, .. } => self.get_value_type_name(value),
+        }
+    }
+
     pub fn reset_steps(&mut self) {
         self.step_count = 0;
     }

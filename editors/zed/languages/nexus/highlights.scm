@@ -51,9 +51,6 @@
 ; Interface definition name
 (interface_definition name: (identifier) @type)
 
-; Implements clause types
-(implements_clause (identifier) @type)
-
 ; Extends clause types
 (extends_clause (identifier) @type)
 

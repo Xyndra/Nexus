@@ -1,0 +1,25 @@
+=== Interface Demo ===
+
+Created SimpleNode:
+SimpleNode 'Answer' with value 42
+Value: 42
+
+Created MultiplierNode:
+MultiplierNode: 7 * 6 = 42
+Value: 42
+
+Direct method calls:
+simple.getValue() = 42
+mult.getValue() = 42
+
+Array of SimpleNodes:
+SimpleNode 'Ten' with value 10
+SimpleNode 'Twenty' with value 20
+SimpleNode 'Thirty' with value 30
+Total value: 60
+
+Heterogeneous array using Valuable interface:
+Items in heterogeneous array: 4
+Heterogeneous total: 196
+
+=== Interface Demo Complete ===

@@ -58,12 +58,12 @@ impl Parser {
             TokenKind::Use => self.parse_use_statement().map(Item::Use),
             TokenKind::Struct => self.parse_struct().map(Item::Struct),
             TokenKind::Interface => self.parse_interface().map(Item::Interface),
+            TokenKind::Impl => self.parse_impl_block().map(Item::Impl),
             TokenKind::Dollar => self.parse_macro_def_or_call(),
             TokenKind::Std | TokenKind::Compat | TokenKind::Plat => self.parse_function_or_method(),
-            _ => {
-                Err(self
-                    .error("Expected top-level item (use, struct, interface, function, or macro)"))
-            }
+            _ => Err(self.error(
+                "Expected top-level item (use, struct, interface, impl, function, or macro)",
+            )),
         }
     }
 
@@ -138,14 +138,6 @@ impl Parser {
         let name = self.expect_identifier()?;
         let name_span = name_span.to(&self.previous_span());
 
-        // Optional implements clause
-        let implements = if self.check_identifier("impl") {
-            self.advance();
-            self.parse_identifier_list()?
-        } else {
-            Vec::new()
-        };
-
         self.expect(TokenKind::LeftBrace)?;
         self.skip_terminators();
 
@@ -160,8 +152,80 @@ impl Parser {
         Ok(StructDefAst {
             name,
             name_span,
-            implements,
             fields,
+            span: start_span.to(&self.previous_span()),
+        })
+    }
+
+    /// Parse an impl block.
+    fn parse_impl_block(&mut self) -> Result<ImplBlockAst, NexusError> {
+        let start_span = self.current_span();
+        self.expect(TokenKind::Impl)?;
+
+        let struct_name = self.expect_identifier()?;
+
+        // Optional interface: impl StructName : InterfaceName { ... }
+        let interface_name = if self.check(TokenKind::Colon) {
+            self.advance();
+            Some(self.expect_identifier()?)
+        } else {
+            None
+        };
+
+        self.expect(TokenKind::LeftBrace)?;
+        self.skip_terminators();
+
+        let mut methods = Vec::new();
+        while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+            methods.push(self.parse_impl_method()?);
+            self.skip_terminators();
+        }
+
+        self.expect(TokenKind::RightBrace)?;
+
+        Ok(ImplBlockAst {
+            struct_name,
+            interface_name,
+            methods,
+            span: start_span.to(&self.previous_span()),
+        })
+    }
+
+    /// Parse a method inside an impl block.
+    fn parse_impl_method(&mut self) -> Result<ImplMethod, NexusError> {
+        let start_span = self.current_span();
+
+        let color = self.parse_function_color()?;
+
+        // Check for mutable self marker
+        let mutable_self = if self.check_identifier("m") {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        let name = self.expect_identifier()?;
+
+        self.expect(TokenKind::LeftParen)?;
+        let params = self.parse_parameters()?;
+        self.expect(TokenKind::RightParen)?;
+
+        self.expect(TokenKind::Colon)?;
+        let return_type = self.parse_type()?;
+
+        let return_contracts = self.parse_contracts()?;
+
+        let body = self.parse_block()?;
+
+        Ok(ImplMethod {
+            color,
+            mutable_self,
+            name,
+            params,
+            return_type,
+            return_contracts,
+            body,
             span: start_span.to(&self.previous_span()),
         })
     }
@@ -234,12 +298,17 @@ impl Parser {
     fn parse_method_signature(&mut self) -> Result<MethodSignature, NexusError> {
         let start_span = self.current_span();
 
-        let color = self.parse_function_color()?;
-
-        // Check for mutable receiver
-        let receiver_mutable = if self.check_identifier("m") {
+        // Check for mutable receiver: (m) or ()
+        let receiver_mutable = if self.check(TokenKind::LeftParen) {
             self.advance();
-            true
+            let is_mutable = if self.check_identifier("m") {
+                self.advance();
+                true
+            } else {
+                false
+            };
+            self.expect(TokenKind::RightParen)?;
+            is_mutable
         } else {
             false
         };
@@ -254,7 +323,6 @@ impl Parser {
         let return_type = self.parse_type()?;
 
         Ok(MethodSignature {
-            color,
             receiver_mutable,
             name,
             params,

@@ -49,9 +49,24 @@ pub struct CCodeGenerator<'a> {
     expected_array_elem_type: Option<String>,
     /// Current function's array element type (if function returns an array)
     current_function_array_elem_type: Option<String>,
+    /// Current method receiver name (for using -> instead of . for field access)
+    current_method_receiver: Option<String>,
+    /// Interface definitions: interface_name -> list of (method_name, return_type, params)
+    interface_methods: HashMap<String, Vec<(String, NexusType, Vec<NexusType>)>>,
+    /// Track which arrays hold interface values: array_var_name -> interface_name
+    interface_array_types: HashMap<String, String>,
+    /// Track which variables hold interface values: var_name -> interface_name
+    interface_var_types: HashMap<String, String>,
+    /// Struct implementations: struct_name -> list of interface names
+    struct_implements: HashMap<String, Vec<String>>,
+    /// VTable type declarations
+    vtable_decls: Vec<String>,
+    /// VTable instance declarations (global variables)
+    vtable_instances: Vec<String>,
 }
 
 impl<'a> CCodeGenerator<'a> {
+    #[allow(clippy::too_many_lines)]
     pub fn new(config: &'a TranspilerConfig, type_registry: &'a TypeRegistry) -> Self {
         Self {
             config,
@@ -79,6 +94,13 @@ impl<'a> CCodeGenerator<'a> {
             struct_defs: HashMap::new(),
             expected_array_elem_type: None,
             current_function_array_elem_type: None,
+            current_method_receiver: None,
+            interface_methods: HashMap::new(),
+            struct_implements: HashMap::new(),
+            vtable_decls: Vec::new(),
+            vtable_instances: Vec::new(),
+            interface_array_types: HashMap::new(),
+            interface_var_types: HashMap::new(),
         }
     }
 
@@ -220,6 +242,131 @@ impl<'a> CCodeGenerator<'a> {
                     self.function_nexus_return_types
                         .insert(qualified_name, resolved_return_type);
                 }
+
+                // Register method return types for type inference
+                if let Item::Method(method) = item {
+                    // Methods are named as ReceiverType_methodName
+                    let method_key = format!("{}_{}", method.receiver_type, method.name);
+                    let resolved_return_type = self.resolve_type_expr(&method.return_type);
+                    let return_type = self.nexus_type_to_c(&resolved_return_type)?;
+                    self.function_return_types
+                        .insert(method_key.clone(), return_type);
+                    self.function_nexus_return_types
+                        .insert(method_key, resolved_return_type);
+                }
+
+                // Register impl block method return types and track implementations
+                if let Item::Impl(impl_block) = item {
+                    for impl_method in &impl_block.methods {
+                        let method_key = format!("{}_{}", impl_block.struct_name, impl_method.name);
+                        let resolved_return_type = self.resolve_type_expr(&impl_method.return_type);
+                        let return_type = self.nexus_type_to_c(&resolved_return_type)?;
+                        self.function_return_types
+                            .insert(method_key.clone(), return_type);
+                        self.function_nexus_return_types
+                            .insert(method_key, resolved_return_type);
+                    }
+
+                    // Track struct implementations for vtable generation
+                    if let Some(ref interface_name) = impl_block.interface_name {
+                        self.struct_implements
+                            .entry(impl_block.struct_name.clone())
+                            .or_default()
+                            .push(interface_name.clone());
+                    }
+                }
+
+                // Register interface definitions for vtable generation
+                if let Item::Interface(interface_def) = item {
+                    let methods: Vec<(String, NexusType, Vec<NexusType>)> = interface_def
+                        .methods
+                        .iter()
+                        .map(|m| {
+                            let return_type = self.resolve_type_expr(&m.return_type);
+                            let params: Vec<NexusType> = m
+                                .params
+                                .iter()
+                                .map(|p| self.resolve_type_expr(&p.ty))
+                                .collect();
+                            (m.name.clone(), return_type, params)
+                        })
+                        .collect();
+                    self.interface_methods
+                        .insert(interface_def.name.clone(), methods);
+                }
+            }
+        }
+
+        // Generate vtable types and instances for interfaces
+        self.generate_vtables()?;
+
+        Ok(())
+    }
+
+    /// Generate vtable types for interfaces and vtable instances for implementing structs
+    fn generate_vtables(&mut self) -> NexusResult<()> {
+        // For each interface, generate a vtable type
+        for (interface_name, methods) in &self.interface_methods.clone() {
+            let mut vtable_struct = String::new();
+            vtable_struct.push_str(&format!(
+                "// VTable type for interface {}\n",
+                interface_name
+            ));
+            vtable_struct.push_str(&format!("typedef struct nx_{}_vtable {{\n", interface_name));
+            vtable_struct.push_str("    nx_vtable_base base;\n");
+
+            // Add function pointer for each method
+            for (method_name, return_type, params) in methods {
+                let c_return_type = self.nexus_type_to_c(return_type)?;
+                let mut param_types = vec!["void*".to_string()]; // receiver is void*
+                for param_type in params {
+                    param_types.push(self.nexus_type_to_c(param_type)?);
+                }
+                vtable_struct.push_str(&format!(
+                    "    {} (*{})({});\n",
+                    c_return_type,
+                    method_name,
+                    param_types.join(", ")
+                ));
+            }
+
+            vtable_struct.push_str(&format!("}} nx_{}_vtable;\n", interface_name));
+            self.vtable_decls.push(vtable_struct);
+        }
+
+        // For each struct that implements an interface, generate vtable instances
+        for (struct_name, interfaces) in &self.struct_implements.clone() {
+            for interface_name in interfaces {
+                if let Some(methods) = self.interface_methods.get(interface_name) {
+                    // Generate the vtable instance
+                    let vtable_var_name = format!("nx_vtable_{}_{}", struct_name, interface_name);
+                    let mut vtable_instance = String::new();
+                    vtable_instance.push_str(&format!(
+                        "// VTable instance for {} implementing {}\n",
+                        struct_name, interface_name
+                    ));
+                    vtable_instance.push_str(&format!(
+                        "nx_{}_vtable {} = {{\n",
+                        interface_name, vtable_var_name
+                    ));
+                    vtable_instance.push_str(&format!(
+                        "    .base = {{ .interface_name = \"{}\", .concrete_type_name = \"{}\" }},\n",
+                        interface_name, struct_name
+                    ));
+
+                    // Add function pointer for each method
+                    for (method_name, _, _) in methods {
+                        // The method should be named nx_StructName_methodName
+                        let method_func_name = format!("nx_{}_{}", struct_name, method_name);
+                        vtable_instance.push_str(&format!(
+                            "    .{} = (void*){},\n",
+                            method_name, method_func_name
+                        ));
+                    }
+
+                    vtable_instance.push_str("};\n");
+                    self.vtable_instances.push(vtable_instance);
+                }
             }
         }
 
@@ -238,6 +385,9 @@ impl<'a> CCodeGenerator<'a> {
         self.function_impls.clear();
         self.global_vars.clear();
 
+        // Track whether this module should include vtable instances
+        let include_vtables = is_root_module;
+
         // Generate implementations for all modules in this group
         for (module_name, program) in modules {
             self.current_module = module_name.clone();
@@ -249,6 +399,25 @@ impl<'a> CCodeGenerator<'a> {
                         self.generate_function_impl(func, module_name)?;
                     }
                     Item::Method(method) => self.generate_method(method)?,
+                    Item::Impl(impl_block) => {
+                        // Convert impl block methods to MethodDef and generate
+                        for impl_method in &impl_block.methods {
+                            let method = nexus_parser::MethodDef {
+                                color: impl_method.color,
+                                receiver_mutable: impl_method.mutable_self,
+                                receiver_type: impl_block.struct_name.clone(),
+                                receiver_name: "self".to_string(),
+                                name: impl_method.name.clone(),
+                                name_span: impl_method.span,
+                                params: impl_method.params.clone(),
+                                return_type: impl_method.return_type.clone(),
+                                return_contracts: impl_method.return_contracts.clone(),
+                                body: impl_method.body.clone(),
+                                span: impl_method.span,
+                            };
+                            self.generate_method(&method)?;
+                        }
+                    }
                     Item::Struct(_) => {
                         // Structs already registered in register_all_modules
                     }
@@ -274,7 +443,7 @@ impl<'a> CCodeGenerator<'a> {
         }
 
         // Build source file for this module group
-        let source = self.build_module_source(top_level_name);
+        let source = self.build_module_source(top_level_name, include_vtables);
         Ok(source)
     }
 
@@ -302,6 +471,33 @@ impl<'a> CCodeGenerator<'a> {
             header.push('\n');
         }
 
+        // VTable type definitions
+        if !self.vtable_decls.is_empty() {
+            header.push_str("// Interface VTable types\n");
+            for decl in &self.vtable_decls {
+                header.push_str(decl);
+                header.push('\n');
+            }
+            header.push('\n');
+        }
+
+        // VTable instance declarations (extern)
+        if !self.vtable_instances.is_empty() {
+            header.push_str("// VTable instances (defined in source files)\n");
+            for instance in &self.vtable_instances {
+                // Extract just the declaration part for the header
+                // The full definition goes in the source file
+                if let Some(first_line) = instance.lines().nth(1) {
+                    // Convert definition to extern declaration
+                    if let Some(eq_pos) = first_line.find(" = ") {
+                        let decl_part = &first_line[..eq_pos];
+                        header.push_str(&format!("extern {};\n", decl_part));
+                    }
+                }
+            }
+            header.push('\n');
+        }
+
         // Forward declarations
         if !self.forward_decls.is_empty() {
             header.push_str("// Function declarations\n");
@@ -317,7 +513,7 @@ impl<'a> CCodeGenerator<'a> {
     }
 
     /// Build source file for a module group
-    fn build_module_source(&self, module_name: &str) -> String {
+    fn build_module_source(&self, module_name: &str, include_vtables: bool) -> String {
         let mut source = String::new();
         source.push_str(&format!(
             "// Generated C code from Nexus module: {}\n",
@@ -327,6 +523,16 @@ impl<'a> CCodeGenerator<'a> {
 
         // Include the declarations header
         source.push_str("#include \"nexus_decl.h\"\n\n");
+
+        // VTable instances (only in root module to avoid multiple definitions)
+        if include_vtables && !self.vtable_instances.is_empty() {
+            source.push_str("// VTable instances\n");
+            for instance in &self.vtable_instances {
+                source.push_str(instance);
+                source.push('\n');
+            }
+            source.push('\n');
+        }
 
         // Global variables
         if !self.global_vars.is_empty() {
@@ -432,6 +638,8 @@ impl<'a> CCodeGenerator<'a> {
         // Clear and populate variable types for this function's parameters
         self.variable_types.clear();
         self.array_element_types.clear();
+        self.interface_array_types.clear();
+        self.interface_var_types.clear();
         self.mutable_params.clear();
         for param in &func.params {
             let param_type = self.resolve_type_expr(&param.ty);
@@ -514,10 +722,39 @@ int main(int argc, char** argv) {{
     fn generate_method(&mut self, method: &MethodDef) -> NexusResult<()> {
         self.current_function_color = Some(method.color);
         self.temp_var_counter = 0;
+        self.current_method_receiver = Some(method.receiver_name.clone());
+
+        // Clear and populate variable types for this method's parameters
+        self.variable_types.clear();
+        self.array_element_types.clear();
+        self.interface_array_types.clear();
+        self.interface_var_types.clear();
+        self.mutable_params.clear();
 
         let return_type = self.nexus_type_to_c(&self.resolve_type_expr(&method.return_type))?;
         let receiver_type =
             self.nexus_type_to_c(&NexusType::Named(method.receiver_type.clone()))?;
+
+        // Track the receiver as a variable with the struct type
+        self.variable_types
+            .insert(method.receiver_name.clone(), receiver_type.clone());
+
+        // Track method parameters
+        for param in &method.params {
+            let param_type = self.resolve_type_expr(&param.ty);
+            let c_type = self.nexus_type_to_c(&param_type)?;
+            self.variable_types.insert(param.name.clone(), c_type);
+
+            if param.mutable {
+                self.mutable_params.insert(param.name.clone());
+            }
+
+            if let NexusType::Array(arr) = &param_type {
+                let elem_c_type = self.nexus_type_to_c(&arr.element_type)?;
+                self.array_element_types
+                    .insert(param.name.clone(), elem_c_type);
+            }
+        }
 
         // Generate method signature (methods become regular functions with receiver as first param)
         let method_c_name = format!("{}_{}", method.receiver_type, method.name);
@@ -564,6 +801,7 @@ int main(int argc, char** argv) {{
 
         self.function_impls.push(method_impl);
         self.current_function_color = None;
+        self.current_method_receiver = None;
 
         Ok(())
     }
@@ -673,14 +911,40 @@ int main(int argc, char** argv) {{
     /// Generate variable declaration
     fn generate_var_decl(&mut self, decl: &VarDecl) -> NexusResult<String> {
         // Track variable type for later use
-        let (var_type, array_suffix, elem_type_opt) = if let Some(ty_expr) = &decl.ty {
+        let (var_type, array_suffix, elem_type_opt, interface_elem_opt) = if let Some(ty_expr) =
+            &decl.ty
+        {
             let resolved = self.resolve_type_expr(ty_expr);
-            let elem_type = if let NexusType::Array(arr) = &resolved {
-                Some(self.nexus_type_to_c(&arr.element_type)?)
+            let (elem_type, interface_elem) = if let NexusType::Array(arr) = &resolved {
+                // Check if the element type is an interface
+                let interface_name = if let NexusType::Interface(iface) = &*arr.element_type {
+                    Some(iface.name.clone())
+                } else if let NexusType::Named(name) = &*arr.element_type {
+                    // Check if this named type is an interface
+                    if self.interface_methods.contains_key(name) {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                // For interface arrays, element type is nx_interface_value*
+                let elem_c_type = if interface_name.is_some() {
+                    "nx_interface_value*".to_string()
+                } else {
+                    self.nexus_type_to_c(&arr.element_type)?
+                };
+                (Some(elem_c_type), interface_name)
             } else {
-                None
+                (None, None)
             };
-            (self.nexus_type_to_c(&resolved)?, String::new(), elem_type)
+            (
+                self.nexus_type_to_c(&resolved)?,
+                String::new(),
+                elem_type,
+                interface_elem,
+            )
         } else {
             // Type inference - determine type from initializer
             // Special handling for arrays
@@ -694,7 +958,7 @@ int main(int argc, char** argv) {{
                     // The type will be determined later when elements are pushed
                     None
                 };
-                ("nx_array".to_string(), String::new(), elem_type)
+                ("nx_array".to_string(), String::new(), elem_type, None)
             } else if let Expression::Call(call) = &decl.init {
                 // Check if this is a function that returns an array with known element type
                 let var_type = self.infer_c_type_from_expr(&decl.init)?;
@@ -722,7 +986,7 @@ int main(int argc, char** argv) {{
                         }
                     }
                 };
-                (var_type, String::new(), elem_type)
+                (var_type, String::new(), elem_type, None)
             } else if let Expression::FieldAccess(field_access) = &decl.init {
                 // Handle field access - extract array element type from struct field
                 let var_type = self.infer_c_type_from_expr(&decl.init)?;
@@ -755,16 +1019,18 @@ int main(int argc, char** argv) {{
                 } else {
                     None
                 };
-                (var_type, String::new(), elem_type)
+                (var_type, String::new(), elem_type, None)
             } else if let Expression::Variable(var_ref) = &decl.init {
                 // Handle variable assignment - copy array element type if available
                 let var_type = self.infer_c_type_from_expr(&decl.init)?;
                 let elem_type = self.array_element_types.get(&var_ref.name).cloned();
-                (var_type, String::new(), elem_type)
+                let interface_elem = self.interface_array_types.get(&var_ref.name).cloned();
+                (var_type, String::new(), elem_type, interface_elem)
             } else {
                 (
                     self.infer_c_type_from_expr(&decl.init)?,
                     String::new(),
+                    None,
                     None,
                 )
             }
@@ -778,6 +1044,22 @@ int main(int argc, char** argv) {{
         if let Some(ref elem_type) = elem_type_opt {
             self.array_element_types
                 .insert(decl.name.clone(), elem_type.clone());
+        }
+
+        // Track interface arrays
+        if let Some(ref interface_name) = interface_elem_opt {
+            self.interface_array_types
+                .insert(decl.name.clone(), interface_name.clone());
+        }
+
+        // Track interface variables (assigned from interface array indexing)
+        if let Expression::Index(index_expr) = &decl.init {
+            if let Expression::Variable(var_ref) = index_expr.array.as_ref() {
+                if let Some(iface_name) = self.interface_array_types.get(&var_ref.name).cloned() {
+                    self.interface_var_types
+                        .insert(decl.name.clone(), iface_name);
+                }
+            }
         }
 
         let mut code = String::new();
@@ -1212,26 +1494,70 @@ int main(int argc, char** argv) {{
                 let value = self.generate_expression(&args[1])?;
                 let elem_type = self.infer_c_type_from_expr(&args[1])?;
 
+                // Check if this is an interface-typed array
+                let interface_name = if let Expression::Variable(var_ref) = &args[0] {
+                    self.interface_array_types.get(&var_ref.name).cloned()
+                } else {
+                    None
+                };
+
                 // Track the element type for the array variable based on what's being pushed
                 // This helps with type inference when indexing the array later
                 if let Expression::Variable(var_ref) = &args[0]
                     && !self.array_element_types.contains_key(&var_ref.name)
                 {
-                    self.array_element_types
-                        .insert(var_ref.name.clone(), elem_type.clone());
+                    if interface_name.is_some() {
+                        // For interface arrays, element type is nx_interface_value*
+                        self.array_element_types
+                            .insert(var_ref.name.clone(), "nx_interface_value*".to_string());
+                    } else {
+                        self.array_element_types
+                            .insert(var_ref.name.clone(), elem_type.clone());
+                    }
                 }
 
-                // nx_array_push_sized modifies array in-place and fixes elem_size on first push
-                // Store the value in a temp variable to get its address
-                let val_temp = format!("_push_val_{}", self.temp_var_counter);
-                self.temp_var_counter += 1;
-                self.statement_prelude
-                    .push(format!("{} {} = {}", elem_type, val_temp, value));
-                self.statement_prelude.push(format!(
-                    "nx_array_push_sized(&({}), &{}, sizeof({}))",
-                    array, val_temp, elem_type
-                ));
-                Ok(array)
+                if let Some(ref iface_name) = interface_name {
+                    // Pushing to an interface-typed array - wrap the concrete struct
+                    // Get the concrete struct type from the value being pushed
+                    let concrete_type = self.infer_struct_name_from_expr(&args[1])?;
+
+                    // Create wrapped interface value
+                    let val_temp = format!("_push_val_{}", self.temp_var_counter);
+                    self.temp_var_counter += 1;
+                    let wrapped_temp = format!("_wrapped_{}", self.temp_var_counter);
+                    self.temp_var_counter += 1;
+
+                    // Store the concrete value
+                    self.statement_prelude
+                        .push(format!("{} {} = {}", elem_type, val_temp, value));
+
+                    // Wrap it in an interface value with the vtable
+                    let vtable_name = format!("nx_vtable_{}_{}", concrete_type, iface_name);
+                    self.statement_prelude.push(format!(
+                        "nx_interface_value* {} = nx_interface_wrap(&{}, sizeof({}), (nx_vtable_base*)&{})",
+                        wrapped_temp, val_temp, elem_type, vtable_name
+                    ));
+
+                    // Push the wrapped pointer
+                    self.statement_prelude.push(format!(
+                        "nx_array_push_sized(&({}), &{}, sizeof(nx_interface_value*))",
+                        array, wrapped_temp
+                    ));
+                    Ok(array)
+                } else {
+                    // Regular push - no interface wrapping needed
+                    // nx_array_push_sized modifies array in-place and fixes elem_size on first push
+                    // Store the value in a temp variable to get its address
+                    let val_temp = format!("_push_val_{}", self.temp_var_counter);
+                    self.temp_var_counter += 1;
+                    self.statement_prelude
+                        .push(format!("{} {} = {}", elem_type, val_temp, value));
+                    self.statement_prelude.push(format!(
+                        "nx_array_push_sized(&({}), &{}, sizeof({}))",
+                        array, val_temp, elem_type
+                    ));
+                    Ok(array)
+                }
             }
 
             "pop" => {
@@ -1487,60 +1813,109 @@ int main(int argc, char** argv) {{
     /// Generate a method call
     fn generate_method_call(&mut self, call: &MethodCallExpr) -> NexusResult<String> {
         // Check if this is a module-qualified function call (e.g., mathlib.abs())
+        // Only treat it as module-qualified if the receiver is a variable that is NOT
+        // a known local variable (i.e., it's a module name)
         if let Expression::Variable(var_ref) = call.receiver.as_ref() {
-            // This looks like a module-qualified call
-            // Generate as: module_function(args) instead of function(&(module), args)
-            let qualified_name = format!("{}_{}", var_ref.name, call.method);
+            // Check if this is a known variable (struct instance) - if so, it's a method call
+            let is_local_variable = self.variable_types.contains_key(&var_ref.name);
 
-            // Get mutable parameter info for this function
-            let mutable_flags = self.function_mutable_params.get(&qualified_name).cloned();
+            if !is_local_variable {
+                // This looks like a module-qualified call
+                // Generate as: module_function(args) instead of function(&(module), args)
+                let qualified_name = format!("{}_{}", var_ref.name, call.method);
 
-            let args: Vec<String> = call
-                .args
-                .iter()
-                .enumerate()
-                .map(|(i, arg)| {
-                    let is_mutable_param = mutable_flags
-                        .as_ref()
-                        .map(|flags| flags.get(i).copied().unwrap_or(false))
-                        .unwrap_or(false);
+                // Get mutable parameter info for this function
+                let mutable_flags = self.function_mutable_params.get(&qualified_name).cloned();
 
-                    if is_mutable_param {
-                        // For mutable parameters, pass address of the variable
-                        if let Expression::Variable(arg_var_ref) = arg {
-                            let name = self.sanitize_identifier(&arg_var_ref.name);
-                            if self.mutable_params.contains(&arg_var_ref.name) {
-                                // Already a pointer, just pass it through
-                                Ok(name)
+                let args: Vec<String> = call
+                    .args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, arg)| {
+                        let is_mutable_param = mutable_flags
+                            .as_ref()
+                            .map(|flags| flags.get(i).copied().unwrap_or(false))
+                            .unwrap_or(false);
+
+                        if is_mutable_param {
+                            // For mutable parameters, pass address of the variable
+                            if let Expression::Variable(arg_var_ref) = arg {
+                                let name = self.sanitize_identifier(&arg_var_ref.name);
+                                if self.mutable_params.contains(&arg_var_ref.name) {
+                                    // Already a pointer, just pass it through
+                                    Ok(name)
+                                } else {
+                                    // Take address of the variable
+                                    Ok(format!("&({})", name))
+                                }
                             } else {
-                                // Take address of the variable
-                                Ok(format!("&({})", name))
+                                // For non-variable expressions, generate normally
+                                self.generate_expression(arg)
                             }
                         } else {
-                            // For non-variable expressions, generate normally
                             self.generate_expression(arg)
                         }
-                    } else {
-                        self.generate_expression(arg)
-                    }
-                })
-                .collect::<NexusResult<Vec<_>>>()?;
+                    })
+                    .collect::<NexusResult<Vec<_>>>()?;
 
-            return Ok(format!("nx_{}({})", qualified_name, args.join(", ")));
+                return Ok(format!("nx_{}({})", qualified_name, args.join(", ")));
+            }
+        }
+
+        // Check if the receiver is from an interface-typed array or is an interface variable (needs vtable dispatch)
+        let interface_name = if let Expression::Index(index_expr) = call.receiver.as_ref() {
+            if let Expression::Variable(var_ref) = index_expr.array.as_ref() {
+                self.interface_array_types.get(&var_ref.name).cloned()
+            } else {
+                None
+            }
+        } else if let Expression::Variable(var_ref) = call.receiver.as_ref() {
+            // Check if this variable holds an interface value
+            self.interface_var_types.get(&var_ref.name).cloned()
+        } else {
+            None
+        };
+
+        if let Some(ref iface_name) = interface_name {
+            // This is a method call on an interface value - use vtable dispatch
+            let receiver_code = self.generate_expression(&call.receiver)?;
+
+            // Generate vtable-based method call
+            // The receiver is nx_interface_value*, we need to:
+            // 1. Get the vtable pointer and cast to the correct vtable type
+            // 2. Call the method through the vtable, passing the data pointer
+            let vtable_type = format!("nx_{}_vtable", iface_name);
+
+            let mut method_args = vec![format!("{}->data", receiver_code)];
+            for arg in &call.args {
+                method_args.push(self.generate_expression(arg)?);
+            }
+
+            // Cast vtable and call: ((vtable_type*)receiver->vtable)->method(receiver->data, args...)
+            return Ok(format!(
+                "(({}*)({}->vtable))->{}({})",
+                vtable_type,
+                receiver_code,
+                call.method,
+                method_args.join(", ")
+            ));
         }
 
         // Otherwise, treat as a regular method call
         // In C, methods become regular functions with receiver as first argument
-        let receiver = self.generate_expression(&call.receiver)?;
+        let receiver_code = self.generate_expression(&call.receiver)?;
 
-        let mut args = vec![format!("&({})", receiver)];
+        // Determine the receiver type to generate the correct function name
+        let receiver_type_name = self.infer_receiver_type(&call.receiver)?;
+
+        let mut args = vec![format!("&({})", receiver_code)];
         for arg in &call.args {
             args.push(self.generate_expression(arg)?);
         }
 
-        // We need to determine the receiver type to generate the correct function name
-        // For now, use a generic pattern
-        Ok(format!("{}({})", call.method, args.join(", ")))
+        // Generate method call as: nx_ReceiverType_methodName(&receiver, args...)
+        let method_c_name = format!("{}_{}", receiver_type_name, call.method);
+        Ok(format!("nx_{}({})", method_c_name, args.join(", ")))
     }
 
     /// Generate a macro call (expand at compile time)
@@ -1591,10 +1966,145 @@ int main(int argc, char** argv) {{
         Ok(format!("\"[MACRO:{}]\"", macro_call.name))
     }
 
+    /// Infer the type name of a receiver expression for method calls
+    fn infer_receiver_type(&self, expr: &Expression) -> NexusResult<String> {
+        match expr {
+            Expression::Variable(var_ref) => {
+                // Look up variable type from our tracking map
+                if let Some(var_type) = self.variable_types.get(&var_ref.name) {
+                    // Extract struct name from prefixed type (nx_module_StructName)
+                    if var_type.starts_with("nx_") {
+                        let parts: Vec<&str> = var_type.split('_').collect();
+                        // Try to find matching struct - the struct name is typically at the end
+                        for i in 2..parts.len() {
+                            let struct_name = parts[i..].join("_");
+                            if self.type_registry.get_struct(&struct_name).is_some() {
+                                return Ok(struct_name);
+                            }
+                        }
+                        // If no struct found, return the last component as a fallback
+                        if parts.len() >= 3 {
+                            return Ok(parts[2..].join("_"));
+                        }
+                    }
+                }
+                // Fallback to variable name (shouldn't happen in well-typed code)
+                Ok(var_ref.name.clone())
+            }
+            Expression::FieldAccess(field_access) => {
+                // Get the type of the field
+                if let Expression::Variable(var_ref) = field_access.object.as_ref() {
+                    if let Some(var_type) = self.variable_types.get(&var_ref.name) {
+                        if var_type.starts_with("nx_") {
+                            let parts: Vec<&str> = var_type.split('_').collect();
+                            for i in 2..parts.len() {
+                                let struct_name = parts[i..].join("_");
+                                if let Some(struct_def) =
+                                    self.type_registry.get_struct(&struct_name)
+                                {
+                                    if let Some(field) = struct_def.get_field(&field_access.field) {
+                                        if let NexusType::Named(type_name) = &field.field_type {
+                                            return Ok(type_name.clone());
+                                        } else if let NexusType::Struct(s) = &field.field_type {
+                                            return Ok(s.name.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok("unknown".to_string())
+            }
+            Expression::Index(index_expr) => {
+                // Get the element type of the array
+                if let Expression::Variable(var_ref) = index_expr.array.as_ref() {
+                    if let Some(elem_type) = self.array_element_types.get(&var_ref.name) {
+                        // elem_type is a C type like "nx_module_StructName"
+                        if elem_type.starts_with("nx_") {
+                            let parts: Vec<&str> = elem_type.split('_').collect();
+                            for i in 2..parts.len() {
+                                let struct_name = parts[i..].join("_");
+                                if self.type_registry.get_struct(&struct_name).is_some() {
+                                    return Ok(struct_name);
+                                }
+                            }
+                            if parts.len() >= 3 {
+                                return Ok(parts[2..].join("_"));
+                            }
+                        }
+                    }
+                }
+                Ok("unknown".to_string())
+            }
+            Expression::StructInit(struct_init) => Ok(struct_init.name.clone()),
+            _ => Ok("unknown".to_string()),
+        }
+    }
+
+    /// Infer the struct name from an expression (used for interface wrapping)
+    fn infer_struct_name_from_expr(&self, expr: &Expression) -> NexusResult<String> {
+        match expr {
+            Expression::StructInit(struct_init) => Ok(struct_init.name.clone()),
+            Expression::Variable(var_ref) => {
+                // Look up the variable type and extract struct name
+                if let Some(var_type) = self.variable_types.get(&var_ref.name) {
+                    if var_type.starts_with("nx_") {
+                        let parts: Vec<&str> = var_type.split('_').collect();
+                        for i in 2..parts.len() {
+                            let struct_name = parts[i..].join("_");
+                            if self.type_registry.get_struct(&struct_name).is_some() {
+                                return Ok(struct_name);
+                            }
+                        }
+                        if parts.len() >= 3 {
+                            return Ok(parts[2..].join("_"));
+                        }
+                    }
+                }
+                Ok(var_ref.name.clone())
+            }
+            Expression::Index(index_expr) => {
+                // For array indexing, get the element type
+                if let Expression::Variable(var_ref) = index_expr.array.as_ref() {
+                    if let Some(elem_type) = self.array_element_types.get(&var_ref.name) {
+                        if elem_type.starts_with("nx_") {
+                            let parts: Vec<&str> = elem_type.split('_').collect();
+                            for i in 2..parts.len() {
+                                let struct_name = parts[i..].join("_");
+                                if self.type_registry.get_struct(&struct_name).is_some() {
+                                    return Ok(struct_name);
+                                }
+                            }
+                            if parts.len() >= 3 {
+                                return Ok(parts[2..].join("_"));
+                            }
+                        }
+                    }
+                }
+                Ok("unknown".to_string())
+            }
+            _ => Ok("unknown".to_string()),
+        }
+    }
+
     /// Generate field access
     fn generate_field_access(&mut self, access: &FieldAccessExpr) -> NexusResult<String> {
         let object = self.generate_expression(&access.object)?;
-        Ok(format!("{}.{}", object, access.field))
+
+        // Check if the object is a method receiver (which is a pointer)
+        let is_pointer = if let Expression::Variable(var_ref) = &*access.object {
+            self.current_method_receiver.as_ref() == Some(&var_ref.name)
+                || self.mutable_params.contains(&var_ref.name)
+        } else {
+            false
+        };
+
+        if is_pointer {
+            Ok(format!("{}->{}", object, access.field))
+        } else {
+            Ok(format!("{}.{}", object, access.field))
+        }
     }
 
     /// Generate index expression
@@ -2059,7 +2569,24 @@ int main(int argc, char** argv) {{
             Expression::MethodCall(method_call) => {
                 // Check if this is a module-qualified function call
                 if let Expression::Variable(var_ref) = method_call.receiver.as_ref() {
-                    // Module-qualified call like mathlib.is_even()
+                    // First check if it's a known local variable (struct instance)
+                    if let Some(var_type) = self.variable_types.get(&var_ref.name) {
+                        if var_type.starts_with("nx_") {
+                            // Extract struct name and look up method return type
+                            let parts: Vec<&str> = var_type.split('_').collect();
+                            for i in 2..parts.len() {
+                                let struct_name = parts[i..].join("_");
+                                // Look up method return type: StructName_methodName
+                                let method_key = format!("{}_{}", struct_name, method_call.method);
+                                if let Some(return_type) =
+                                    self.function_return_types.get(&method_key)
+                                {
+                                    return Ok(return_type.clone());
+                                }
+                            }
+                        }
+                    }
+                    // Otherwise try module-qualified call like mathlib.is_even()
                     let qualified_name = format!("{}_{}", var_ref.name, method_call.method);
                     if let Some(return_type) = self.function_return_types.get(&qualified_name) {
                         return Ok(return_type.clone());

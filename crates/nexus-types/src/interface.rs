@@ -4,7 +4,7 @@
 //! Only interfaces (and primitive types) can be used as function argument types.
 
 use crate::{FunctionType, NexusType};
-use nexus_core::{FunctionColor, Span};
+use nexus_core::Span;
 use std::collections::HashMap;
 
 /// Definition of an interface
@@ -70,8 +70,6 @@ pub struct InterfaceMethod {
     pub params: Vec<MethodParam>,
     /// Return type
     pub return_type: NexusType,
-    /// Function color requirement
-    pub color: FunctionColor,
 }
 
 impl InterfaceMethod {
@@ -83,7 +81,6 @@ impl InterfaceMethod {
             receiver_mutable: false,
             params: Vec::new(),
             return_type,
-            color: FunctionColor::Std,
         }
     }
 
@@ -99,13 +96,8 @@ impl InterfaceMethod {
         self
     }
 
-    /// Set the function color
-    pub fn with_color(mut self, color: FunctionColor) -> Self {
-        self.color = color;
-        self
-    }
-
     /// Convert to a function type (for type checking)
+    /// Note: The color is determined by the implementing method, not the interface
     pub fn to_function_type(&self, receiver_type: NexusType) -> FunctionType {
         let mut params = vec![receiver_type];
         params.extend(self.params.iter().map(|p| p.ty.clone()));
@@ -113,7 +105,8 @@ impl InterfaceMethod {
         FunctionType {
             params,
             return_type: Box::new(self.return_type.clone()),
-            color: self.color,
+            // Interfaces don't restrict color; use Std as default for type checking
+            color: nexus_core::FunctionColor::Std,
         }
     }
 }

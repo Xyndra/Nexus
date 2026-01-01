@@ -66,6 +66,8 @@ pub enum Item {
     Struct(StructDefAst),
     /// Interface definition
     Interface(InterfaceDefAst),
+    /// Impl block (methods for a struct, optionally implementing an interface)
+    Impl(ImplBlockAst),
     /// Macro definition
     Macro(MacroDef),
     /// Top-level macro call (for generating structs/functions at compile time)
@@ -85,16 +87,16 @@ pub struct UseStatement {
 }
 
 impl Item {
-    /// Get the span of this item
-    pub fn span(&self) -> &Span {
+    pub fn span(&self) -> Span {
         match self {
-            Item::Use(u) => &u.span,
-            Item::Function(f) => &f.span,
-            Item::Method(m) => &m.span,
-            Item::Struct(s) => &s.span,
-            Item::Interface(i) => &i.span,
-            Item::Macro(m) => &m.span,
-            Item::TopLevelMacroCall(c) => &c.span,
+            Item::Use(u) => u.span,
+            Item::Function(f) => f.span,
+            Item::Method(m) => m.span,
+            Item::Struct(s) => s.span,
+            Item::Interface(i) => i.span,
+            Item::Impl(i) => i.span,
+            Item::Macro(m) => m.span,
+            Item::TopLevelMacroCall(m) => m.span,
         }
     }
 }
@@ -169,10 +171,42 @@ pub struct StructDefAst {
     pub name: String,
     /// Span of just the struct name
     pub name_span: Span,
-    /// Interfaces this struct implements
-    pub implements: Vec<String>,
     /// Fields
     pub fields: Vec<FieldDef>,
+    /// Source span
+    pub span: Span,
+}
+
+/// An impl block for implementing methods on a struct
+#[derive(Debug, Clone)]
+pub struct ImplBlockAst {
+    /// The struct this impl block is for
+    pub struct_name: String,
+    /// The interface being implemented (None for inherent impl)
+    pub interface_name: Option<String>,
+    /// Methods defined in this impl block
+    pub methods: Vec<ImplMethod>,
+    /// Source span
+    pub span: Span,
+}
+
+/// A method defined inside an impl block
+#[derive(Debug, Clone)]
+pub struct ImplMethod {
+    /// Function color
+    pub color: FunctionColor,
+    /// Whether self is mutable
+    pub mutable_self: bool,
+    /// Method name
+    pub name: String,
+    /// Parameters (not including self)
+    pub params: Vec<Parameter>,
+    /// Return type
+    pub return_type: TypeExpr,
+    /// Return contracts
+    pub return_contracts: Vec<ContractExpr>,
+    /// Method body
+    pub body: Block,
     /// Source span
     pub span: Span,
 }
@@ -210,8 +244,6 @@ pub struct InterfaceDefAst {
 /// Method signature in an interface
 #[derive(Debug, Clone)]
 pub struct MethodSignature {
-    /// Function color requirement
-    pub color: FunctionColor,
     /// Whether the receiver is mutable
     pub receiver_mutable: bool,
     /// Method name

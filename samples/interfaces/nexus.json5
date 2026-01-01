@@ -1,0 +1,8 @@
+{
+    mod: 'interfaces',
+    main: 'main.nx',
+    permissions: {
+        "compat.io": ['interfaces']
+    },
+    deps: []
+}
