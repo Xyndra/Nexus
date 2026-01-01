@@ -349,15 +349,25 @@ fn test_c_transpiler(
     })?;
     timing.transpiler_time += transpile_start.elapsed();
 
-    // Write files
-    for (path, content) in &result.files {
-        fs::write(path, content).map_err(|e| {
+    // Write source files (one per top-level module)
+    for (file_path, content) in &result.files {
+        let output_path = temp_dir.join(file_path.file_name().unwrap());
+        fs::write(&output_path, content).map_err(|e| {
             format!(
-                "{}::{}: Failed to write C file: {}",
+                "{}::{}: Failed to write C source file: {}",
                 sample.name, test_case.name, e
             )
         })?;
     }
+
+    // Write header file
+    let header_path = temp_dir.join(result.header_path.file_name().unwrap());
+    fs::write(&header_path, &result.header).map_err(|e| {
+        format!(
+            "{}::{}: Failed to write C header file: {}",
+            sample.name, test_case.name, e
+        )
+    })?;
     fs::write(
         temp_dir.join("nexus_core.h"),
         nexus_transpiler_c::RUNTIME_HEADER,
@@ -419,7 +429,11 @@ fn try_compile_and_run(
     test_case_name: &str,
     input_path: Option<&PathBuf>,
 ) -> Result<Option<(String, Duration, Duration)>, String> {
-    let mut c_files: Vec<PathBuf> = result.files.keys().cloned().collect();
+    let mut c_files: Vec<PathBuf> = result
+        .files
+        .keys()
+        .map(|p| temp_dir.join(p.file_name().unwrap()))
+        .collect();
     c_files.push(temp_dir.join("nexus_core.c"));
 
     let exe_name = if cfg!(windows) {

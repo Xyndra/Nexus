@@ -914,7 +914,8 @@ fn transpile_path(path: &Path, target: &str, config: &CliConfig) -> Result<(), N
     println!("  Generated: nexus_core.h");
     println!("  Generated: nexus_core.c");
 
-    // Write transpiled files
+    // Write the C source files (one per top-level module)
+    let mut source_files = Vec::new();
     for (file_path, content) in &result.files {
         let output_path = output_dir.join(file_path.file_name().unwrap());
         fs::write(&output_path, content).map_err(|e| NexusError::IoError {
@@ -924,14 +925,29 @@ fn transpile_path(path: &Path, target: &str, config: &CliConfig) -> Result<(), N
             "  Generated: {}",
             output_path.file_name().unwrap().to_string_lossy()
         );
+        source_files.push(output_path);
     }
+
+    // Write the declarations header file
+    let header_output = output_dir.join(result.header_path.file_name().unwrap());
+    fs::write(&header_output, &result.header).map_err(|e| NexusError::IoError {
+        message: format!("Failed to write {}: {}", header_output.display(), e),
+    })?;
+    println!(
+        "  Generated: {}",
+        header_output.file_name().unwrap().to_string_lossy()
+    );
 
     println!("\nTranspilation complete!");
     println!("\nTo compile the generated C code:");
+    let source_files_str: Vec<String> = source_files
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
     println!(
-        "  cc -o program {}/nexus_core.c {}/*.nx.c",
+        "  cc -o program {}/nexus_core.c {}",
         output_dir.display(),
-        output_dir.display()
+        source_files_str.join(" ")
     );
 
     Ok(())

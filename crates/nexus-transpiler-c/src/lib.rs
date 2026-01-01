@@ -43,10 +43,16 @@ impl Default for TranspilerConfig {
 /// Result of transpilation
 #[derive(Debug)]
 pub struct TranspileResult {
-    /// Generated C files mapped by their output path
+    /// Generated C source files mapped by their output path
+    /// Each top-level module (e.g., "std", "myproject") gets its own file
+    /// with all submodules combined into it
     pub files: HashMap<PathBuf, String>,
+    /// Header file with all forward declarations and typedefs
+    pub header: String,
     /// Runtime support file
     pub runtime: String,
+    /// Output path for the header file
+    pub header_path: PathBuf,
 }
 
 /// Main transpiler for converting Nexus to C
@@ -80,7 +86,7 @@ impl CTranspiler {
         // Collect all programs for cross-module macro expansion
         let all_programs: Vec<&Program> = typed_programs.values().collect();
 
-        // Collect module info for cross-module references
+        // Collect module info for cross-module references (in load order)
         let all_module_info: Vec<(String, &Program)> = resolved
             .sources
             .iter()
@@ -91,34 +97,56 @@ impl CTranspiler {
             })
             .collect();
 
-        // Generate C code for each module
-        let mut files = HashMap::new();
-        let project_module_name = &resolved.config.module_name;
-        for (module_path, program) in typed_programs.iter() {
-            let module_name = resolved
-                .sources
-                .iter()
-                .find(|s| s.path == *module_path)
-                .map(|s| s.name.as_str())
-                .unwrap_or("unknown");
-            // Root module is the one whose name matches the project module_name
-            let is_root_module = module_name == project_module_name;
-            let c_code = self.generate_c_code(
-                program,
-                module_path,
-                module_name,
-                &all_programs,
-                &all_module_info,
-                is_root_module,
-            )?;
-            let output_path = self.get_output_path(module_path);
-            files.insert(output_path, c_code);
+        // Group modules by their top-level module name
+        // e.g., "std", "std.collections", "std.util.strings" all go into "std"
+        // e.g., "myproject", "myproject.utils" all go into "myproject"
+        let mut top_level_groups: HashMap<String, Vec<(String, &Program)>> = HashMap::new();
+        for (module_name, program) in &all_module_info {
+            let top_level = module_name
+                .split('.')
+                .next()
+                .unwrap_or(module_name)
+                .to_string();
+            top_level_groups
+                .entry(top_level)
+                .or_default()
+                .push((module_name.clone(), *program));
         }
+
+        // Generate C code for each top-level module group
+        let project_module_name = &resolved.config.module_name;
+        let mut generator = CCodeGenerator::new(&self.config, &self.type_registry);
+
+        // First pass: register all types and functions from all modules
+        generator.register_all_modules(&all_module_info, &all_programs)?;
+
+        // Second pass: generate code for each top-level module group
+        let mut files = HashMap::new();
+        for (top_level_name, modules) in &top_level_groups {
+            let is_root = top_level_name == project_module_name;
+            let source = generator.generate_module_group(top_level_name, modules, is_root)?;
+            let output_path = self
+                .config
+                .output_dir
+                .join(format!("{}.nx.c", top_level_name));
+            files.insert(output_path, source);
+        }
+
+        // Generate header with all declarations
+        let header = generator.generate_header();
 
         // Generate the runtime support file
         let runtime = generate_runtime(&self.config);
 
-        Ok(TranspileResult { files, runtime })
+        // Output paths
+        let header_path = self.config.output_dir.join("nexus_decl.h");
+
+        Ok(TranspileResult {
+            files,
+            header,
+            runtime,
+            header_path,
+        })
     }
 
     /// Type check all modules in the resolved project
@@ -313,37 +341,6 @@ impl CTranspiler {
         typechecker.register_interface(interface_def);
         Ok(())
     }
-
-    /// Generate C code for a single program
-    fn generate_c_code(
-        &self,
-        program: &Program,
-        module_path: &Path,
-        module_name: &str,
-        all_programs: &[&Program],
-        all_module_info: &[(String, &Program)],
-        is_root_module: bool,
-    ) -> NexusResult<String> {
-        let mut generator = CCodeGenerator::new(&self.config, &self.type_registry);
-        generator.generate(
-            program,
-            module_path,
-            module_name,
-            all_programs,
-            all_module_info,
-            is_root_module,
-        )
-    }
-
-    /// Get the output path for a module
-    fn get_output_path(&self, module_path: &Path) -> PathBuf {
-        let file_name = module_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("module");
-
-        self.config.output_dir.join(format!("{}.nx.c", file_name))
-    }
 }
 
 impl Default for CTranspiler {
@@ -386,14 +383,13 @@ mod tests {
         let type_registry = TypeRegistry::new();
         let mut generator = CCodeGenerator::new(&config, &type_registry);
 
-        let result = generator.generate(
-            &program,
-            Path::new("test.nx"),
-            "test",
-            &[&program],
-            &[],
-            true,
-        );
+        let all_module_info = vec![("test".to_string(), &program)];
+        let all_programs: Vec<&Program> = vec![&program];
+
+        generator
+            .register_all_modules(&all_module_info, &all_programs)
+            .unwrap();
+        let result = generator.generate_module_group("test", &all_module_info, true);
         assert!(result.is_ok());
     }
 }

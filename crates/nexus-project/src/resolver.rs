@@ -207,8 +207,11 @@ impl DependencyResolver {
         let mut sources = Vec::new();
 
         // First, collect .nx files in the current directory (not recursive)
-        let module_source = self.collect_module_source(module_name, dir)?;
-        sources.push(module_source);
+        // If there are no .nx files, we skip adding a ModuleSource for this directory
+        // but still process subdirectories as submodules
+        if let Some(module_source) = self.collect_module_source(module_name, dir)? {
+            sources.push(module_source);
+        }
 
         // Then, find and process subdirectories as submodules
         let entries = fs::read_dir(dir).map_err(|e| NexusError::IoError {
@@ -255,7 +258,12 @@ impl DependencyResolver {
     }
 
     /// Collect .nx files from a single directory (non-recursive) into a ModuleSource.
-    fn collect_module_source(&self, module_name: &str, dir: &PathBuf) -> NexusResult<ModuleSource> {
+    /// Returns None if there are no .nx files in the directory (allowing empty parent modules).
+    fn collect_module_source(
+        &self,
+        module_name: &str,
+        dir: &PathBuf,
+    ) -> NexusResult<Option<ModuleSource>> {
         let mut nx_files: Vec<PathBuf> = Vec::new();
 
         let entries = fs::read_dir(dir).map_err(|e| NexusError::IoError {
@@ -274,14 +282,11 @@ impl DependencyResolver {
             }
         }
 
+        // If no .nx files, return None instead of an error
+        // This allows parent directories to exist without any code
+        // as long as they have submodules with code
         if nx_files.is_empty() {
-            return Err(NexusError::IoError {
-                message: format!(
-                    "No .nx files found in module '{}' at '{}'",
-                    module_name,
-                    dir.display()
-                ),
-            });
+            return Ok(None);
         }
 
         // Sort for consistent ordering
@@ -297,12 +302,12 @@ impl DependencyResolver {
             combined_content.push('\n');
         }
 
-        Ok(ModuleSource {
+        Ok(Some(ModuleSource {
             name: module_name.to_string(),
             path: dir.clone(),
             content: combined_content,
             files: nx_files,
-        })
+        }))
     }
 
     /// Load a module and its submodules for a resolved dependency

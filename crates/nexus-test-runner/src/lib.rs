@@ -529,17 +529,38 @@ impl TestRunner {
             }
         };
 
-        // Write the C files
-        for (path, content) in &transpile_result.files {
-            if let Err(e) = fs::write(path, content) {
+        // Write the C source files (one per top-level module)
+        for (file_path, content) in &transpile_result.files {
+            let output_path = temp_dir.join(file_path.file_name().unwrap());
+            if let Err(e) = fs::write(&output_path, content) {
                 return Some(CTestResult {
                     passed: false,
                     c_output: String::new(),
                     compiler: "write".to_string(),
-                    error: Some(format!("Failed to write C file {}: {}", path.display(), e)),
+                    error: Some(format!(
+                        "Failed to write C source file {}: {}",
+                        output_path.display(),
+                        e
+                    )),
                     diff: None,
                 });
             }
+        }
+
+        // Write the header file
+        let header_path = temp_dir.join(transpile_result.header_path.file_name().unwrap());
+        if let Err(e) = fs::write(&header_path, &transpile_result.header) {
+            return Some(CTestResult {
+                passed: false,
+                c_output: String::new(),
+                compiler: "write".to_string(),
+                error: Some(format!(
+                    "Failed to write header file {}: {}",
+                    header_path.display(),
+                    e
+                )),
+                diff: None,
+            });
         }
 
         // Write runtime files
@@ -584,8 +605,12 @@ impl TestRunner {
         transpile_result: &nexus_transpiler_c::TranspileResult,
         interpreter_output: &str,
     ) -> Result<CTestResult, String> {
-        // Collect all C source files
-        let mut c_files: Vec<PathBuf> = transpile_result.files.keys().cloned().collect();
+        // Collect all C source files (one per top-level module + runtime)
+        let mut c_files: Vec<PathBuf> = transpile_result
+            .files
+            .keys()
+            .map(|p| temp_dir.join(p.file_name().unwrap()))
+            .collect();
         c_files.push(temp_dir.join("nexus_runtime.c"));
 
         // Output executable

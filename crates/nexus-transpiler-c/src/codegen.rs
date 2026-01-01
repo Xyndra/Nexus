@@ -8,7 +8,6 @@ use nexus_lsp_server::macro_expansion::MacroExpansionContext;
 use nexus_parser::*;
 use nexus_types::{ArraySize, NexusType, PrimitiveType, TypeRegistry};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use crate::TranspilerConfig;
 
@@ -16,9 +15,7 @@ use crate::TranspilerConfig;
 pub struct CCodeGenerator<'a> {
     config: &'a TranspilerConfig,
     type_registry: &'a TypeRegistry,
-    output: String,
     indent_level: usize,
-    includes: HashSet<String>,
     struct_decls: Vec<String>,
     forward_decls: Vec<String>,
     global_vars: Vec<String>,
@@ -59,9 +56,7 @@ impl<'a> CCodeGenerator<'a> {
         Self {
             config,
             type_registry,
-            output: String::new(),
             indent_level: 0,
-            includes: HashSet::new(),
             struct_decls: Vec::new(),
             forward_decls: Vec::new(),
             global_vars: Vec::new(),
@@ -166,30 +161,19 @@ impl<'a> CCodeGenerator<'a> {
         Ok(())
     }
 
-    /// Generate C code for a program
-    pub fn generate(
+    /// Register all modules - collects types, functions, and sets up mappings
+    /// This must be called before generate_module_group or generate_header
+    pub fn register_all_modules(
         &mut self,
-        program: &Program,
-        module_path: &Path,
-        module_name: &str,
-        all_programs: &[&Program],
         all_module_info: &[(String, &Program)],
-        is_root_module: bool,
-    ) -> NexusResult<String> {
-        // Store module name for later use in C main generation
-        let module_name_for_main = module_name.to_string();
-        // Track current module for function call resolution
-        self.current_module = module_name.to_string();
-        // Add standard includes
-        self.includes.insert("stdint.h".to_string());
-        self.includes.insert("stdbool.h".to_string());
-        self.includes.insert("stddef.h".to_string());
-        self.includes.insert("nexus_core.h".to_string());
-
-        // Initialize interpreter for macro expansion
-        self.interpreter = Some(Interpreter::new());
-        if let Some(ref mut interp) = self.interpreter {
-            let _ = interp.load_program(program);
+        all_programs: &[&Program],
+    ) -> NexusResult<()> {
+        // Initialize interpreter for macro expansion (use first program)
+        if let Some((_, first_program)) = all_module_info.first() {
+            self.interpreter = Some(Interpreter::new());
+            if let Some(ref mut interp) = self.interpreter {
+                let _ = interp.load_program(first_program);
+            }
         }
 
         // Initialize macro context with all programs (for cross-module macro support)
@@ -198,46 +182,30 @@ impl<'a> CCodeGenerator<'a> {
         ));
 
         // Collect all items from all modules, including macro-expanded ones
-        let mut all_module_items: Vec<(String, Vec<Item>)> = Vec::new();
-        for (other_module_name, other_program) in all_module_info {
-            let items = self.collect_all_items(other_program)?;
-            all_module_items.push((other_module_name.clone(), items));
-        }
+        // and register structs and function mappings
+        for (module_name, program) in all_module_info {
+            self.current_module = module_name.clone();
+            let items = self.collect_all_items(program)?;
 
-        // Also collect items for the main program
-        let main_items = self.collect_all_items(program)?;
-
-        // Generate struct declarations from ALL modules first
-        // This ensures forward declarations can reference struct types from any module
-        let original_module = self.current_module.clone();
-        for (other_module_name, items) in &all_module_items {
-            // Temporarily switch current_module so struct prefixing uses the correct module
-            self.current_module = other_module_name.clone();
-            for item in items {
+            // Generate struct declarations for this module
+            for item in &items {
                 if let Item::Struct(struct_def) = item {
                     self.generate_struct(struct_def)?;
                 }
             }
-        }
 
-        // Generate forward declarations for ALL functions from ALL modules
-        // and populate function_to_module mapping
-        for (other_module_name, items) in &all_module_items {
-            // Temporarily switch current_module so struct prefixing uses the correct module
-            self.current_module = other_module_name.clone();
-            for item in items {
+            // Register function mappings and generate forward declarations
+            for item in &items {
                 if let Item::Function(func) = item {
-                    self.generate_function_forward_decl(func, other_module_name)?;
+                    self.generate_function_forward_decl(func, module_name)?;
                     // Store mapping from function name to module-qualified name
-                    // Always qualify, even main functions
-                    let qualified_name =
-                        format!("{}_{}", other_module_name.replace(".", "_"), func.name);
+                    let qualified_name = format!("{}_{}", module_name.replace(".", "_"), func.name);
                     self.function_to_module
                         .insert(func.name.clone(), qualified_name.clone());
 
                     // Store per-module mapping for disambiguation
                     self.module_function_map.insert(
-                        (other_module_name.clone(), func.name.clone()),
+                        (module_name.clone(), func.name.clone()),
                         qualified_name.clone(),
                     );
 
@@ -252,100 +220,130 @@ impl<'a> CCodeGenerator<'a> {
                 }
             }
         }
-        // Restore original module
-        self.current_module = original_module;
 
-        // Generate implementations for THIS module using expanded items
-        // (Structs are already generated above for all modules)
-        for item in &main_items {
-            match item {
-                Item::Function(func) => {
-                    self.generate_function_impl(func, module_name)?;
-                }
-                Item::Method(method) => self.generate_method(method)?,
-                Item::Struct(_) => {
-                    // Structs already generated above for all modules
-                }
-                Item::Interface(_) => {
-                    // Interfaces are not directly represented in C
-                }
-                Item::Macro(_) => {
-                    // Macros are expanded during transpilation
-                }
-                Item::Use(_) => {
-                    // Use statements are resolved during type checking
-                }
-                Item::TopLevelMacroCall(_) => {
-                    // Already expanded above via collect_all_items
+        Ok(())
+    }
+
+    /// Generate C code for a group of modules (a top-level module and all its submodules)
+    /// Returns the generated C source code
+    pub fn generate_module_group(
+        &mut self,
+        top_level_name: &str,
+        modules: &[(String, &Program)],
+        is_root_module: bool,
+    ) -> NexusResult<String> {
+        // Clear previous function implementations for this group
+        self.function_impls.clear();
+        self.global_vars.clear();
+
+        // Generate implementations for all modules in this group
+        for (module_name, program) in modules {
+            self.current_module = module_name.clone();
+            let items = self.collect_all_items(program)?;
+
+            for item in &items {
+                match item {
+                    Item::Function(func) => {
+                        self.generate_function_impl(func, module_name)?;
+                    }
+                    Item::Method(method) => self.generate_method(method)?,
+                    Item::Struct(_) => {
+                        // Structs already registered in register_all_modules
+                    }
+                    Item::Interface(_) => {
+                        // Interfaces are not directly represented in C
+                    }
+                    Item::Macro(_) => {
+                        // Macros are expanded during transpilation
+                    }
+                    Item::Use(_) => {
+                        // Use statements are resolved during type checking
+                    }
+                    Item::TopLevelMacroCall(_) => {
+                        // Already expanded above via collect_all_items
+                    }
                 }
             }
         }
 
         // Add C main entry point if this is the root module
         if is_root_module {
-            self.generate_c_main(&module_name_for_main);
+            self.generate_c_main(top_level_name);
         }
 
-        // Build final output
-        self.build_output(module_path);
-
-        Ok(self.output.clone())
+        // Build source file for this module group
+        let source = self.build_module_source(top_level_name);
+        Ok(source)
     }
 
-    /// Build the final output with includes, declarations, and implementations
-    fn build_output(&mut self, module_path: &Path) {
-        let mut output = String::new();
+    /// Generate the header file with all declarations
+    pub fn generate_header(&self) -> String {
+        let mut header = String::new();
+        header.push_str("// Generated Nexus declarations header\n");
+        header.push_str("// DO NOT EDIT - This file is automatically generated\n\n");
+        header.push_str("#ifndef NEXUS_DECL_H\n");
+        header.push_str("#define NEXUS_DECL_H\n\n");
 
-        // File header comment
-        output.push_str(&format!(
-            "// Generated C code from Nexus source: {}\n",
-            module_path.display()
-        ));
-        output.push_str("// DO NOT EDIT - This file is automatically generated\n\n");
-
-        // Includes
-        for include in &self.includes {
-            output.push_str(&format!("#include <{}>\n", include));
-        }
-        output.push('\n');
+        header.push_str("#include <stddef.h>\n");
+        header.push_str("#include <stdint.h>\n");
+        header.push_str("#include <stdbool.h>\n");
+        header.push_str("#include \"nexus_core.h\"\n");
+        header.push('\n');
 
         // Struct definitions (must come before function declarations)
         if !self.struct_decls.is_empty() {
+            header.push_str("// Struct definitions\n");
             for decl in &self.struct_decls {
-                output.push_str(decl);
-                output.push('\n');
+                header.push_str(decl);
+                header.push('\n');
             }
-            output.push('\n');
+            header.push('\n');
         }
 
         // Forward declarations
         if !self.forward_decls.is_empty() {
-            output.push_str("// Forward declarations\n");
+            header.push_str("// Function declarations\n");
             for decl in &self.forward_decls {
-                output.push_str(decl);
-                output.push('\n');
+                header.push_str(decl);
+                header.push('\n');
             }
-            output.push('\n');
+            header.push('\n');
         }
+
+        header.push_str("#endif // NEXUS_DECL_H\n");
+        header
+    }
+
+    /// Build source file for a module group
+    fn build_module_source(&self, module_name: &str) -> String {
+        let mut source = String::new();
+        source.push_str(&format!(
+            "// Generated C code from Nexus module: {}\n",
+            module_name
+        ));
+        source.push_str("// DO NOT EDIT - This file is automatically generated\n\n");
+
+        // Include the declarations header
+        source.push_str("#include \"nexus_decl.h\"\n\n");
 
         // Global variables
         if !self.global_vars.is_empty() {
-            output.push_str("// Global variables\n");
+            source.push_str("// Global variables\n");
             for var in &self.global_vars {
-                output.push_str(var);
-                output.push('\n');
+                source.push_str(var);
+                source.push('\n');
             }
-            output.push('\n');
+            source.push('\n');
         }
 
         // Function implementations
-        output.push_str("// Function implementations\n");
+        source.push_str("// Function implementations\n");
         for func in &self.function_impls {
-            output.push_str(func);
-            output.push('\n');
+            source.push_str(func);
+            source.push('\n');
         }
 
-        self.output = output;
+        source
     }
 
     /// Generate a struct definition
